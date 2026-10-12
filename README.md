@@ -61,3 +61,7 @@ me3 launch --profile minimap.me3
 - [hudhook](https://github.com/veeenu/hudhook) for the overlay
 - [soarqin/EROverlay](https://github.com/soarqin/EROverlay) for documenting the beacon and map point logic
 - [SoulsFormats](https://github.com/soulsmods/SoulsFormatsNEXT), [UXM](https://github.com/Nordgaren/UXM-Selective-Unpack) and [Smithbox](https://github.com/vawser/Smithbox) for file format and map research
+
+## License
+
+MIT, see [LICENSE](LICENSE). Use it however you like, just keep the credit.
