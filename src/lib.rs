@@ -17,7 +17,14 @@ use fromsoftware_shared::SharedTaskImpExt;
 use hudhook::Hudhook;
 use hudhook::hooks::dx12::ImguiDx12Hooks;
 use hudhook::windows::Win32::Foundation::HMODULE;
-use hudhook::windows::Win32::System::LibraryLoader::GetModuleFileNameW;
+use hudhook::windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW};
+use hudhook::windows::core::PCWSTR;
+use pelite::pe64::{Pe, PeView};
+
+/// The game version the struct layouts and beacon offsets were made for. fromsoftware-rs panics
+/// on versions it doesn't know, which with `panic = "abort"` would crash the game, so any other
+/// version leaves the mod switched off.
+const SUPPORTED_VERSION: [u16; 4] = [2, 7, 1, 0];
 
 /// # Safety
 /// Called by the Windows loader when me3 loads this DLL. Do not call it yourself.
@@ -31,6 +38,9 @@ pub unsafe extern "system" fn DllMain(module: usize, reason: u32, _reserved: usi
 }
 
 fn init(module: usize) {
+    if !supported_game() {
+        return;
+    }
     let Ok(task) = CSTaskImp::wait_for_instance(Duration::MAX) else {
         return;
     };
@@ -62,4 +72,18 @@ fn dll_path(module: usize) -> PathBuf {
     let len =
         unsafe { GetModuleFileNameW(Some(HMODULE(module as *mut c_void)), &mut buffer) } as usize;
     PathBuf::from(std::ffi::OsString::from_wide(&buffer[..len]))
+}
+
+fn supported_game() -> bool {
+    let Ok(exe) = (unsafe { GetModuleHandleW(PCWSTR::null()) }) else {
+        return false;
+    };
+    // SAFETY: the game's exe stays mapped for the life of the process.
+    let exe = unsafe { PeView::module(exe.0 as *const u8) };
+    let version = exe
+        .resources()
+        .ok()
+        .and_then(|resources| resources.version_info().ok())
+        .and_then(|info| info.fixed().map(|fixed| fixed.dwProductVersion));
+    version.is_some_and(|v| [v.Major, v.Minor, v.Patch, v.Build] == SUPPORTED_VERSION)
 }

@@ -425,6 +425,7 @@ dependencies = [
  "fromsoftware-shared",
  "hudhook",
  "libloading",
+ "pelite",
  "png",
  "rsa",
  "texture2ddecoder",
