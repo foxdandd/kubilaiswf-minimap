@@ -1,0 +1,7 @@
+profileVersion = "v1"
+
+[[supports]]
+game = "eldenring"
+
+[[natives]]
+path = 'target/release/kubilaiswf_minimap.dll'
