@@ -37,7 +37,10 @@ path = 'C:\path\to\kubilaiswf-minimap\kubilaiswf-minimap.dll'
 `minimap.ini` next to the dll, created on first launch. Restart the game after changing it.
 
 ```ini
-trail = true
+trail = true                 ; path you walked
+rotate = true                ; false keeps north up
+compass = true               ; N / E / S / W letters
+hide_in_boss_fights = false  ; hide while a boss health bar is up
 ```
 
 ## Known limitations

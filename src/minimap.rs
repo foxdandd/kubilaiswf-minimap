@@ -161,7 +161,13 @@ impl ImguiRenderLoop for Minimap {
         }
         // Menus like the pause menu and world map draw where the minimap sits.
         let target = match &snapshot {
-            Some(snapshot) if self.visible && in_control(snapshot) => 1.0,
+            Some(snapshot)
+                if self.visible
+                    && in_control(snapshot)
+                    && !(self.config.hide_in_boss_fights && snapshot.boss_fight) =>
+            {
+                1.0
+            }
             _ => 0.0,
         };
         self.alpha += (target - self.alpha) * (ui.io().delta_time * 12.0).min(1.0);
@@ -178,11 +184,14 @@ impl ImguiRenderLoop for Minimap {
 impl Minimap {
     fn update(&mut self, snapshot: &Snapshot) {
         self.last = Some(snapshot.clone());
-        if let Some(forward) = normalize(snapshot.camera_forward) {
-            self.camera_forward = forward;
-        }
-        if let Some(right) = normalize(snapshot.camera_right) {
-            self.camera_right = right;
+        // Without rotation the basis stays at its north-up default.
+        if self.config.rotate {
+            if let Some(forward) = normalize(snapshot.camera_forward) {
+                self.camera_forward = forward;
+            }
+            if let Some(right) = normalize(snapshot.camera_right) {
+                self.camera_right = right;
+            }
         }
 
         // hudhook leaks the staging buffer of every upload, so only re-center the window near
@@ -296,7 +305,12 @@ impl Minimap {
         self.draw_graces(&draw_list, player, center, radius, s);
         self.draw_beacons(ui, &draw_list, player, center, radius, s);
 
-        for (i, letter) in ["N", "E", "S", "W"].into_iter().enumerate() {
+        let letters = if self.config.compass {
+            ["N", "E", "S", "W"].as_slice()
+        } else {
+            &[]
+        };
+        for (i, letter) in letters.iter().enumerate() {
             let direction = self.bearing(i as f32 * 90.0);
             let position = [
                 center[0] + direction[0] * (radius - 14.0 * s),

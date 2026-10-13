@@ -25,6 +25,8 @@ pub struct Snapshot {
     pub fade: f32,
     /// False while a menu has the HUD hidden or changed.
     pub hud_visible: bool,
+    /// A boss health bar is on screen.
+    pub boss_fight: bool,
     pub graces: Vec<[f32; 2]>,
     pub beacons: Vec<Beacon>,
     /// Includes whatever map mods like Map for Goblins add.
@@ -75,8 +77,10 @@ fn read() -> Option<Snapshot> {
             .map(|plate| plate.current_color.a)
             .fold(0.0, f32::max)
     });
-    let hud_visible = unsafe { CSFeManImp::instance() }
-        .map_or(true, |fe| fe.hud_state == CSFeManHudState::Default);
+    let fe = unsafe { CSFeManImp::instance() }.ok();
+    let hud_visible = fe.is_none_or(|fe| fe.hud_state == CSFeManHudState::Default);
+    // Empty boss bar slots have no boss name.
+    let boss_fight = fe.is_some_and(|fe| fe.boss_health_displays.iter().any(|bar| bar.fmg_id > 0));
 
     // Havok space, which the camera and physics matrices use, shares axes and
     // scale with block space, so their direction vectors apply to block positions.
@@ -96,6 +100,7 @@ fn read() -> Option<Snapshot> {
         camera_forward: [view.2.0, view.2.2],
         fade,
         hud_visible,
+        boss_fight,
         graces: discovered_graces(position, space),
         beacons: map.map_or_else(Vec::new, placed_beacons),
         points: map.map_or_else(Vec::new, |map| visible_points(map, position, space)),
