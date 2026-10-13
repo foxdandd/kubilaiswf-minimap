@@ -79,8 +79,13 @@ fn read() -> Option<Snapshot> {
     });
     let fe = unsafe { CSFeManImp::instance() }.ok();
     let hud_visible = fe.is_none_or(|fe| fe.hud_state == CSFeManHudState::Default);
-    // Empty boss bar slots have no boss name.
-    let boss_fight = fe.is_some_and(|fe| fe.boss_health_displays.iter().any(|bar| bar.fmg_id > 0));
+    // The boss name entries outlive the bar (they stay set after dying), so ask the HUD instead.
+    let boss_fight = fe.is_some_and(|fe| {
+        fe.frontend_values
+            .boss_list_tag_data
+            .iter()
+            .any(|tag| tag.is_visible)
+    });
 
     // Havok space, which the camera and physics matrices use, shares axes and
     // scale with block space, so their direction vectors apply to block positions.
