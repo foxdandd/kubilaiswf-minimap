@@ -1,0 +1,56 @@
+name: build
+
+# Every push to main builds the zip; pushing a v* tag also publishes it as a GitHub release,
+# with the tag's message as the release notes.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: rustup update stable --no-self-update && rustup default stable
+
+      - run: cargo build --release --locked
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = 'kubilaiswf-minimap'
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { $env:GITHUB_SHA.Substring(0, 7) }
+          New-Item -ItemType Directory -Force "dist/$name" | Out-Null
+          Copy-Item target/release/kubilaiswf_minimap.dll "dist/$name/$name.dll"
+          Copy-Item package/*, LICENSE "dist/$name"
+          # tar writes zip paths with forward slashes, unlike Compress-Archive.
+          tar -a -cf "dist/$name-$version.zip" -C dist $name
+          Get-FileHash "dist/$name-$version.zip", "dist/$name/$name.dll" -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } |
+            Set-Content -Encoding ascii dist/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kubilaiswf-minimap
+          path: |
+            dist/*.zip
+            dist/SHA256SUMS.txt
+
+      - name: Release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          # The checkout only has the commit; fetch the annotated tag to read its message.
+          git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"
+          $notes = (git tag -l --format='%(contents)' $tag) -join "`n"
+          $sums = (Get-Content dist/SHA256SUMS.txt) -join "`n"
+          "$notes`n`nsha256`n``````n$sums`n``````" | Set-Content -Encoding utf8 notes.md
+          gh release create $tag dist/*.zip dist/SHA256SUMS.txt --title $tag --notes-file notes.md
