@@ -20,11 +20,17 @@ A minimap for Elden Ring that looks like it belongs in the game. Loaded with [me
 1. Download the zip from [Releases](https://github.com/kubilaiswf/kubilaiswf-minimap/releases) and extract the `kubilaiswf-minimap` folder anywhere.
 2. Double click `kubilaiswf-minimap.me3`.
 
-To use it with another me3 mod, add this to that mod's `.me3` file. If the file has a `natives = []` line, delete that line.
+To use it with another me3 mod, add this to that mod's `.me3` file. If the file has an empty `natives = []` line, delete that line.
 
 ```toml
 [[natives]]
 path = 'C:\path\to\kubilaiswf-minimap\kubilaiswf-minimap.dll'
+```
+
+If that line lists other DLLs, keep it and add this one inside the brackets instead:
+
+```toml
+natives = [ { path = 'C:\some\other\mod.dll' }, { path = 'C:\path\to\kubilaiswf-minimap\kubilaiswf-minimap.dll' } ]
 ```
 
 ## Controls
