@@ -132,9 +132,11 @@ fn serve(
                 let tile = match decoded.entry((map, cell)) {
                     Entry::Occupied(tile) => tile.into_mut(),
                     Entry::Vacant(slot) => slot.insert(match tiles.get(&(map, cell)) {
-                        Some(entry) => {
-                            decode_tile(&oodle, &bdt.read_at(entry.offset, entry.size)?)?
-                        }
+                        // One unreadable tile must not stop the map for the rest of the session.
+                        Some(entry) => bdt
+                            .read_at(entry.offset, entry.size)
+                            .and_then(|dcx| decode_tile(&oodle, &dcx))
+                            .unwrap_or_else(|_| EMPTY.repeat(TILE * TILE)),
                         None => EMPTY.repeat(TILE * TILE),
                     }),
                 };

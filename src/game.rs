@@ -128,7 +128,10 @@ fn locate(block: BlockId, local: [f32; 2]) -> ([f32; 2], i32, Option<MapId>) {
         let map = (block.area() == 60).then_some(MapId::Overworld);
         return (position, i32::from(block.area()), map);
     }
-    let Some(conversion) = legacy_conversion(block, local) else {
+    // Roundtable Hold has a world map spot but isn't anywhere on the map itself.
+    let roundtable_hold = (block.area(), block.block()) == (11, 10);
+    let conversion = legacy_conversion(block, local).filter(|_| !roundtable_hold);
+    let Some(conversion) = conversion else {
         return (local, i32::from(block), None);
     };
     let position = [

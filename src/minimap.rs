@@ -137,6 +137,9 @@ impl ImguiRenderLoop for Minimap {
         };
         if uploaded {
             self.map_window = Some((window.map, window.origin));
+        } else {
+            // Ask again next frame instead of waiting until the player nears the window's edge.
+            self.requested_window = None;
         }
     }
 
@@ -369,6 +372,10 @@ impl Minimap {
             [x / WINDOW as f32, 1.0 - y / WINDOW as f32]
         };
         let center_uv = uv([0.0, 0.0]);
+        // A window from somewhere else would draw the wrong place until the new one arrives.
+        if !center_uv.iter().all(|c| (0.0..=1.0).contains(c)) {
+            return false;
+        }
         let tint = self.color([236, 226, 210], 1.0);
         for i in 0..DISC_SEGMENTS {
             let rim = |k: usize| {
