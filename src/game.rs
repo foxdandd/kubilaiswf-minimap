@@ -27,6 +27,8 @@ pub struct Snapshot {
     pub hud_visible: bool,
     /// A boss health bar is on screen.
     pub boss_fight: bool,
+    /// Catacombs (m30), caves (m31) and tunnels (m32), which have no map of their own.
+    pub in_cave: bool,
     pub graces: Vec<[f32; 2]>,
     pub beacons: Vec<Beacon>,
     /// Includes whatever map mods like Map for Goblins add.
@@ -106,6 +108,7 @@ fn read() -> Option<Snapshot> {
         fade,
         hud_visible,
         boss_fight,
+        in_cave: (30..=32).contains(&player.current_block_id.area()),
         graces: discovered_graces(position, space),
         beacons: map.map_or_else(Vec::new, placed_beacons),
         points: map.map_or_else(Vec::new, |map| visible_points(map, position, space)),

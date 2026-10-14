@@ -32,6 +32,8 @@ path = 'C:\path\to\kubilaiswf-minimap\kubilaiswf-minimap.dll'
 - F9 show / hide
 - F10 zoom (40 / 80 / 160 m)
 
+Both keys can be changed in `minimap.ini`.
+
 ## Settings
 
 `minimap.ini` next to the dll, created on first launch. Restart the game after changing it.
@@ -41,6 +43,11 @@ trail = true                 ; path you walked
 rotate = true                ; false keeps north up
 compass = true               ; N / E / S / W letters
 hide_in_boss_fights = false  ; hide while a boss health bar is up
+hide_in_caves = true         ; hide in catacombs, caves and tunnels
+size = 1.0                   ; 0.5 to 2.5
+margin = 24                  ; distance from the top right corner, pixels at 1080p
+toggle_key = F9              ; F1-F12, A-Z, 0-9, PageUp, Keypad0... or none
+zoom_key = F10
 ```
 
 ## Known limitations

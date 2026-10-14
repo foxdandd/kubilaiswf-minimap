@@ -2,15 +2,13 @@ use std::collections::VecDeque;
 use std::f32::consts::{PI, TAU};
 use std::path::{Path, PathBuf};
 
-use hudhook::imgui::{Context, DrawListMut, FontSource, ImColor32, Key, TextureId, Ui};
+use hudhook::imgui::{Context, DrawListMut, FontSource, ImColor32, TextureId, Ui};
 use hudhook::{ImguiRenderLoop, RenderContext};
 
 use crate::config::Config;
 use crate::game::{self, PointKind, Snapshot};
 use crate::maptiles::{self, Loader, MapId, TILE, WINDOW};
 
-const TOGGLE_KEY: Key = Key::F9;
-const ZOOM_KEY: Key = Key::F10;
 /// Meters from the center to the rim at each zoom level.
 const ZOOM_RANGES: [f32; 3] = [40.0, 80.0, 160.0];
 const TRAIL_SPACING: f32 = 1.5;
@@ -112,7 +110,7 @@ impl ImguiRenderLoop for Minimap {
     ) {
         // The font is baked once, so follow later resolution changes by scaling it.
         let height = ctx.io().display_size[1];
-        ctx.io_mut().font_global_scale = height / self.font_display_height;
+        ctx.io_mut().font_global_scale = height / self.font_display_height * self.config.size;
 
         // hudhook uploads on the game's queue and waits for the GPU. On loading screens that
         // queue can be waiting on the game, which deadlocks it.
@@ -144,10 +142,11 @@ impl ImguiRenderLoop for Minimap {
     }
 
     fn render(&mut self, ui: &mut Ui) {
-        if ui.is_key_pressed_no_repeat(TOGGLE_KEY) {
+        let pressed = |key: Option<_>| key.is_some_and(|key| ui.is_key_pressed_no_repeat(key));
+        if pressed(self.config.toggle_key) {
             self.visible = !self.visible;
         }
-        if ui.is_key_pressed_no_repeat(ZOOM_KEY) {
+        if pressed(self.config.zoom_key) {
             self.zoom = (self.zoom + 1) % ZOOM_RANGES.len();
         }
 
@@ -167,7 +166,8 @@ impl ImguiRenderLoop for Minimap {
             Some(snapshot)
                 if self.visible
                     && in_control(snapshot)
-                    && !(self.config.hide_in_boss_fights && snapshot.boss_fight) =>
+                    && !(self.config.hide_in_boss_fights && snapshot.boss_fight)
+                    && !(self.config.hide_in_caves && snapshot.in_cave) =>
             {
                 1.0
             }
@@ -269,10 +269,11 @@ impl Minimap {
 
     fn draw(&self, ui: &Ui, player: &Snapshot) {
         let [width, height] = ui.io().display_size;
-        let s = height / 1080.0;
+        let screen_scale = height / 1080.0;
+        let s = screen_scale * self.config.size;
         let radius = RADIUS * s;
         let frame_size = radius / FRAME_HOLE;
-        let margin = 24.0 * s;
+        let margin = self.config.margin * screen_scale;
         let center = [width - margin - frame_size / 2.0, margin + frame_size / 2.0];
         let draw_list = ui.get_foreground_draw_list();
 
