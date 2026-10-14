@@ -52,5 +52,5 @@ jobs:
           git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"
           $notes = (git tag -l --format='%(contents)' $tag) -join "`n"
           $sums = (Get-Content dist/SHA256SUMS.txt) -join "`n"
-          "$notes`n`nsha256`n``````n$sums`n``````" | Set-Content -Encoding utf8 notes.md
+          @($notes, '', 'sha256', '```', $sums, '```') -join "`n" | Set-Content -Encoding utf8 notes.md
           gh release create $tag dist/*.zip dist/SHA256SUMS.txt --title $tag --notes-file notes.md
