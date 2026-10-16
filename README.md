@@ -2,8 +2,10 @@
 
 A minimap for Elden Ring that looks like it belongs in the game. Loaded with [me3](https://github.com/garyttierney/me3).
 
-Experimental local development: an optional Tombsward Catacombs navigation-layout
-mode is documented in [TESTING.md](TESTING.md). Generate the dungeon data locally;
+Experimental local development: an optional navigation-layout mode for 60 small
+dungeon map blocks (48 base game, 12 DLC) is documented in [TESTING.md](TESTING.md).
+It loads the current map in the background and retains pilot 2's height display.
+Generate the dungeon data locally;
 it is not embedded in the DLL or committed to this source repository.
 
 - the game's own map, read from your install at runtime (no game files are shipped)

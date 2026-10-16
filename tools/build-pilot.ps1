@@ -6,7 +6,8 @@ param(
     [string]$CargoHome = '',
     [string]$RustupHome = '',
     [string]$GccBin = '',
-    [switch]$Offline
+    [switch]$Offline,
+    [switch]$SmallDungeons
 )
 $ErrorActionPreference = 'Stop'
 $sourceRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -29,17 +30,24 @@ if ($LASTEXITCODE -ne 0) { throw 'Release build failed' }
 $target = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $sourceRoot 'target' }
 New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null
 Copy-Item -LiteralPath (Join-Path $target 'release\kubilaiswf_minimap.dll') -Destination (Join-Path $OutputRoot 'tombsward-minimap-test.dll')
-Copy-Item -LiteralPath (Join-Path $sourceRoot 'package\tombsward-test.me3') -Destination $OutputRoot
+$profileName=if ($SmallDungeons) {'dungeon-test.me3'} else {'tombsward-test.me3'}
+Copy-Item -LiteralPath (Join-Path $sourceRoot 'package\tombsward-test.me3') -Destination (Join-Path $OutputRoot $profileName)
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'LICENSE'),(Join-Path $sourceRoot 'TESTING.md') -Destination $OutputRoot
 $ini = Get-Content -Raw -LiteralPath (Join-Path $sourceRoot 'package\minimap.ini')
 $ini = $ini.Replace('dungeon_mode = false','dungeon_mode = true').Replace('size = 1.0','size = 1.5')
 [IO.File]::WriteAllText((Join-Path $OutputRoot 'minimap.ini'),$ini,[Text.UTF8Encoding]::new($false))
-& $PythonExe (Join-Path $PSScriptRoot 'prepare_dungeon.py') $NavigationRoot $OutputRoot
+$dataOptions=@()
+if ($SmallDungeons) { $dataOptions+='--small-dungeons' }
+& $PythonExe (Join-Path $PSScriptRoot 'prepare_dungeon.py') $NavigationRoot $OutputRoot @dataOptions
 if ($LASTEXITCODE -ne 0) { throw 'Dungeon data preparation failed' }
 $env:TOMBSWARD_NAV_TEST_FILE = Join-Path $OutputRoot 'tombsward.nav'
-& cargo test --release --lib @common -- --include-ignored
+if ($SmallDungeons) { $env:DUNGEON_NAV_TEST_DIR=Join-Path $OutputRoot 'dungeons' }
+else { Remove-Item Env:DUNGEON_NAV_TEST_DIR -ErrorAction SilentlyContinue }
+$testOptions=@('--include-ignored')
+if (-not $SmallDungeons) { $testOptions+=@('--skip','real_maps_decode_and_background_loader_switches_exact_blocks','--skip','all_small_dungeons_render_at_multiple_heights_views_and_zooms','--skip','dungeon_selection_clears_old_geometry_during_rapid_warps') }
+& cargo test --release --lib @common -- @testOptions
 if ($LASTEXITCODE -ne 0) { throw 'Geometry/data tests failed' }
-Get-ChildItem -LiteralPath $OutputRoot -File | Where-Object Name -NE 'SHA256SUMS.txt' | Get-FileHash -Algorithm SHA256 |
-    ForEach-Object { "$($_.Hash.ToLower())  $([IO.Path]::GetFileName($_.Path))" } |
+Get-ChildItem -LiteralPath $OutputRoot -File -Recurse | Where-Object Name -NE 'SHA256SUMS.txt' | Sort-Object FullName | Get-FileHash -Algorithm SHA256 |
+    ForEach-Object { "$($_.Hash.ToLower())  $([IO.Path]::GetRelativePath($OutputRoot,$_.Path).Replace('\','/'))" } |
     Set-Content -LiteralPath (Join-Path $OutputRoot 'SHA256SUMS.txt') -Encoding ascii
 Write-Output "Private local test package: $OutputRoot"

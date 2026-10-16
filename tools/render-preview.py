@@ -47,22 +47,28 @@ def render(scene, atlas):
     return result.resize((448,448),Image.Resampling.LANCZOS)
 
 
-def main(root, output):
+def main(root, output, dungeons=False):
     info=json.loads((root/'atlas.json').read_text())
     atlas=np.frombuffer((root/'atlas.rgba').read_bytes(),dtype=np.uint8).reshape(info['height'],info['width'],4).astype(float)
-    canvas=Image.new('RGB',(1456,636),(13,18,23)); draw=ImageDraw.Draw(canvas)
+    canvas=Image.new('RGB',(1456,1160 if dungeons else 636),(13,18,23)); draw=ImageDraw.Draw(canvas)
     font_path='C:/Windows/Fonts/segoeui.ttf'
     title=ImageFont.truetype(font_path,29); label=ImageFont.truetype(font_path,22); small=ImageFont.truetype(font_path,17)
-    draw.text((28,18),'Pilot 2  |  Clean floors and height context',fill='white',font=title)
-    for i,(name,caption) in enumerate([('Entrance','Entrance level'),('Stairs','Stairs between levels'),('Lower','Lower rooms')]):
-        x=24+i*480
-        draw.text((x+12,72),caption,fill=(222,207,172),font=label)
-        scene=json.loads((root/f'{name}-Layered.json').read_text())
-        canvas.paste(render(scene,atlas),(x,110))
+    draw.text((28,18),'Pilot 3  |  60 dungeon map blocks' if dungeons else 'Pilot 2  |  Clean floors and height context',fill='white',font=title)
+    panels=[('m30_01_00_00',"Impaler's Catacombs"),('m31_03_00_00','Groveside Cave'),
+            ('m32_01_00_00','Limgrave Tunnels'),('m40_00_00_00','Fog Rift Catacombs'),
+            ('m41_00_00_00','Belurat Gaol'),('m43_01_00_00',"Dragon's Pit")] if dungeons else [
+            ('Entrance-Layered','Entrance level'),('Stairs-Layered','Stairs between levels'),('Lower-Layered','Lower rooms')]
+    for i,(name,caption) in enumerate(panels):
+        x=24+(i%3)*480; y=(i//3)*524
+        draw.text((x+12,72+y),caption,fill=(222,207,172),font=label)
+        scene=json.loads((root/f'{name}.json').read_text())
+        canvas.paste(render(scene,atlas),(x,110+y))
+    legend_y=1092 if dungeons else 568
     for x,text,color in [(280,'UPPER',(108,156,173)),(650,'CURRENT',(233,209,158)),(1035,'LOWER',(131,108,76))]:
-        draw.rectangle((x,568,x+12,580),fill=color)
-        draw.text((x+22,560),text,fill=color,font=label)
-    draw.text((28,608),'Offline preview from actual ImGui draw data. Pilot 1 displays in game; pilot 2 still needs an in-game check.',fill=(154,166,174),font=small)
+        draw.rectangle((x,legend_y,x+12,legend_y+12),fill=color)
+        draw.text((x+22,legend_y-8),text,fill=color,font=label)
+    note='Offline previews from actual ImGui draw data at sampled positions. New dungeon alignment needs an in-game check.' if dungeons else 'Offline preview from actual ImGui draw data. Pilot 1 displays in game; pilot 2 still needs an in-game check.'
+    draw.text((28,legend_y+40),note,fill=(154,166,174),font=small)
     output.parent.mkdir(parents=True,exist_ok=True);canvas.save(output)
     print(output)
 
@@ -70,4 +76,5 @@ def main(root, output):
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('root',type=Path);parser.add_argument('output',type=Path)
-    args=parser.parse_args();main(args.root,args.output)
+    parser.add_argument('--dungeons',action='store_true',help='Show six sample dungeons from the 60-map render test')
+    args=parser.parse_args();main(args.root,args.output,args.dungeons)

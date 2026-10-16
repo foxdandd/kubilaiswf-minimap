@@ -7,6 +7,7 @@ use hudhook::{ImguiRenderLoop, RenderContext};
 
 use crate::config::Config;
 use crate::dungeon::{self, DungeonMap, FloorTracker, View};
+use crate::dungeon_loader::DungeonLoader;
 use crate::game::{self, PointKind, Snapshot};
 use crate::maptiles::{self, Loader, MapId, TILE, WINDOW};
 
@@ -105,6 +106,7 @@ mod dungeon_render_tests {
 
     fn dump_scene(path:&Path,data:&hudhook::imgui::DrawData) {
         use std::io::Write;
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let mut file=std::io::BufWriter::new(std::fs::File::create(path).unwrap());
         write!(file,"{{\"lists\":[").unwrap();
         for (list_index,list) in data.draw_lists().enumerate() {
@@ -199,10 +201,95 @@ mod dungeon_render_tests {
         }
         }
     }
+
+    #[test]
+    #[ignore="Requires DUNGEON_NAV_TEST_DIR generated from the local game"]
+    fn all_small_dungeons_render_at_multiple_heights_views_and_zooms() {
+        let _lock=IMGUI_TEST_LOCK.lock().unwrap();
+        let directory=std::env::var_os("DUNGEON_NAV_TEST_DIR").expect("Set local dungeon directory");
+        let mut paths:Vec<_>=std::fs::read_dir(&directory).unwrap().map(|e|e.unwrap().path())
+            .filter(|p|p.extension().is_some_and(|e|e=="nav")).collect();
+        paths.sort();assert_eq!(paths.len(),60);
+        let mut minimap=Minimap::new(Path::new("missing-test-game-directory"),test_config(),None);
+        minimap.alpha=1.;
+        let mut context=Context::create();context.set_ini_filename(None);
+        context.io_mut().display_size=[800.,600.];context.io_mut().delta_time=1./60.;
+        context.fonts().build_rgba32_texture();
+        for path in paths {
+            let map=DungeonMap::load(&path).unwrap();
+            let block=map.block;
+            let mut positions:Vec<[f32;3]>=map.triangles.iter().map(|triangle|
+                std::array::from_fn(|axis|triangle.points.iter().map(|p|p[axis]).sum::<f32>()/3.)).collect();
+            positions.sort_by(|a,b|a[1].total_cmp(&b[1]));
+            let samples=[positions[0],positions[positions.len()/2],*positions.last().unwrap()];
+            minimap.dungeon=Some(map);minimap.dungeon_floor.reset();
+            for (pose,position) in samples.into_iter().enumerate() {
+                let mut player=player_at(position);player.block_id=block;
+                assert!(minimap.dungeon_active(&player));
+                for view in [View::Layered,View::Current,View::All] {
+                    minimap.dungeon_view=view;
+                    for zoom in [0,2] {
+                        minimap.zoom=zoom;
+                        {
+                            let ui=context.frame();let draw=ui.get_foreground_draw_list();
+                            minimap.draw_dungeon(ui,&draw,&player,[400.,300.],96.,1.);
+                        }
+                        let data=context.render();
+                        assert!(data.total_vtx_count>0,"no geometry for {path:?} {position:?}");
+                        for list in data.draw_lists() {for v in list.vtx_buffer() {
+                            assert!(v.pos.iter().all(|x|x.is_finite()),"nonfinite {path:?}");
+                            assert!((v.pos[0]-400.).hypot(v.pos[1]-300.)<=98.,"outside frame {path:?}");
+                        }}
+                        if pose==1 && view==View::Layered && zoom==0 {
+                            if let Some(dir)=std::env::var_os("MINIMAP_PREVIEW_DIR") {
+                                let name=path.file_stem().unwrap().to_string_lossy();
+                                dump_scene(&Path::new(&dir).join(format!("{name}.json")),data);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore="Requires DUNGEON_NAV_TEST_DIR generated from the local game"]
+    fn dungeon_selection_clears_old_geometry_during_rapid_warps() {
+        use std::time::{Duration,Instant};
+        let directory=std::env::var_os("DUNGEON_NAV_TEST_DIR").expect("Set local dungeon directory");
+        let directory=Path::new(&directory);
+        let loader=DungeonLoader::spawn(directory,&directory.join("selection-test.log")).unwrap();
+        let mut minimap=Minimap::new(Path::new("missing-test-game-directory"),test_config(),None)
+            .with_dungeon_loader(Some(loader));
+        let wait=|minimap:&mut Minimap,block:[u8;4]| {
+            let deadline=Instant::now()+Duration::from_secs(10);
+            loop {
+                minimap.select_dungeon(block);
+                if minimap.dungeon.as_ref().is_some_and(|map|map.block==block) {break;}
+                assert!(Instant::now()<deadline,"map load timed out: {block:?}");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
+        wait(&mut minimap,[30,0,0,0]);
+        minimap.select_dungeon([30,1,0,0]);
+        assert!(minimap.dungeon.as_ref().is_none_or(|map|map.block==[30,1,0,0]));
+        minimap.select_dungeon([31,3,0,0]);
+        assert!(minimap.dungeon.as_ref().is_none_or(|map|map.block==[31,3,0,0]));
+        wait(&mut minimap,[31,3,0,0]);
+        assert_eq!(minimap.dungeon_name,"Groveside Cave");
+        minimap.select_dungeon([60,42,36,0]);
+        assert!(minimap.dungeon.is_none());
+        assert_eq!(minimap.dungeon_floor.height(),None);
+        wait(&mut minimap,[43,1,0,0]);
+        assert_eq!(minimap.dungeon_name,"Dragon's Pit");
+    }
 }
 
 pub struct Minimap {
     dungeon: Option<DungeonMap>,
+    dungeon_loader: Option<DungeonLoader>,
+    dungeon_block: Option<[u8;4]>,
+    dungeon_name: String,
     dungeon_view: View,
     dungeon_floor: FloorTracker,
     config: Config,
@@ -231,6 +318,9 @@ impl Minimap {
     pub fn new(game_dir: &Path, config: Config, dungeon: Option<DungeonMap>) -> Self {
         Self {
             dungeon,
+            dungeon_loader:None,
+            dungeon_block:None,
+            dungeon_name:"Tombsward Catacombs".to_owned(),
             dungeon_view: View::Layered,
             dungeon_floor: FloorTracker::default(),
             config,
@@ -251,6 +341,28 @@ impl Minimap {
             zoom: 1,
             alpha: 0.0,
             facing_yaw: None,
+        }
+    }
+
+    pub fn with_dungeon_loader(mut self, loader:Option<DungeonLoader>) -> Self {
+        self.dungeon_loader=loader;
+        self
+    }
+
+    fn select_dungeon(&mut self, block:[u8;4]) {
+        let Some(loader)=&self.dungeon_loader else {return;};
+        if self.dungeon_block!=Some(block) {
+            self.dungeon_block=Some(block);
+            self.dungeon=None;
+            self.dungeon_floor.reset();
+            loader.request(block);
+        }
+        if let Some(loaded)=loader.poll() {
+            // A warp can finish while another map is still being decoded.
+            if Some(loaded.block)==self.dungeon_block {
+                self.dungeon=loaded.map.ok();
+                self.dungeon_name=loaded.name;
+            }
         }
     }
 }
@@ -326,6 +438,7 @@ impl ImguiRenderLoop for Minimap {
 
         let snapshot = game::LATEST.lock().unwrap().clone();
         if let Some(snapshot) = &snapshot {
+            self.select_dungeon(snapshot.block_id);
             self.update(snapshot);
             if self.dungeon_active(snapshot) {
                 self.dungeon_floor.update(self.dungeon.as_ref().unwrap(),snapshot.local_position,ui.io().delta_time);
@@ -523,8 +636,12 @@ impl Minimap {
         self.draw_arrow(&draw_list, center, s);
         if dungeon_active {
             let y=center[1]+frame_size*0.5+8.0*s;
-            let title=if self.dungeon_view==View::All {"Tombsward - all levels"} else {"Tombsward"};
-            self.draw_text_centered(ui,&draw_list,[center[0],y],self.color(PALE_GOLD,1.0),title);
+            let mut title=if self.dungeon_view==View::All {format!("{} - all levels",self.dungeon_name)} else {self.dungeon_name.clone()};
+            if ui.calc_text_size(&title)[0]>frame_size {
+                while !title.is_empty() && ui.calc_text_size(format!("{title}..."))[0]>frame_size {title.pop();}
+                title.push_str("...");
+            }
+            self.draw_text_centered(ui,&draw_list,[center[0],y],self.color(PALE_GOLD,1.0),&title);
             if self.dungeon_view==View::Current {
                 self.draw_text_centered(ui,&draw_list,[center[0],y+15.0*s],self.color(LEVEL_EDGE,0.9),"Current level");
             } else {

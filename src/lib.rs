@@ -1,6 +1,7 @@
 mod archive;
 mod config;
 mod dungeon;
+mod dungeon_loader;
 mod formats;
 mod game;
 mod maptiles;
@@ -61,8 +62,17 @@ fn init(module: usize) {
     };
     let dll = dll_path(module);
     let config = config::Config::load(&dll.with_file_name("minimap.ini"));
-    let dungeon = if config.dungeon_mode {
-        match dungeon::DungeonMap::load(&dll.with_file_name("tombsward.nav")) {
+    let log=dll.with_file_name("minimap-test.log");
+    let catalog=dll.with_file_name("dungeons");
+    let dungeon_loader=if config.dungeon_mode && catalog.join("maps.tsv").exists() {
+        match dungeon_loader::DungeonLoader::spawn(&catalog,&log) {
+            Ok(loader)=>Some(loader),
+            Err(error)=>{let _=std::fs::write(&log,format!("Dungeon catalog unavailable: {error}\n"));None}
+        }
+    } else {None};
+    // Keep pilot 1/2 folders usable when no multi-dungeon catalog is installed.
+    let dungeon = if config.dungeon_mode && dungeon_loader.is_none() {
+        match dungeon::DungeonMap::load_for_block(&dll.with_file_name("tombsward.nav"),[30,0,0,0]) {
             Ok(map) => Some(map),
             Err(error) => {
                 let _ = std::fs::write(dll.with_file_name("minimap-test.log"), format!("Dungeon mode unavailable: {error}\n"));
@@ -71,7 +81,7 @@ fn init(module: usize) {
         }
     } else { None };
     let _ = Hudhook::builder()
-        .with::<ImguiDx12Hooks>(minimap::Minimap::new(&game_dir, config, dungeon))
+        .with::<ImguiDx12Hooks>(minimap::Minimap::new(&game_dir, config, dungeon).with_dungeon_loader(dungeon_loader))
         .build()
         .apply();
 }

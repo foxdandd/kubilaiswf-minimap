@@ -1,18 +1,33 @@
-"""Generate a private Tombsward test sidecar from local navigation exports.
-Usage: python tools/prepare_dungeon.py NAVIGATION_ROOT OUTPUT_DIRECTORY
+"""Generate private dungeon sidecars from local navigation exports.
+Usage: python tools/prepare_dungeon.py NAVIGATION_ROOT OUTPUT_DIRECTORY [--small-dungeons]
 The generated sidecar contains game-derived geometry. Do not add it to Git.
 """
 import argparse
+import csv
 import gzip
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 import struct
 
 
-def prepare(root, output):
-    directory = root / 'm30_00_00_00'
+SMALL_AREAS = {30, 31, 32, 40, 41, 42, 43}
+
+
+def map_block(map_id):
+    if not re.fullmatch(r'm\d{2}_\d{2}_\d{2}_\d{2}', map_id):
+        raise ValueError('Invalid map identifier')
+    block = [int(part) for part in map_id[1:].split('_')]
+    if not 10 <= block[0] < 60:
+        raise ValueError('Only non-overworld dungeon blocks are supported')
+    return bytes(block)
+
+
+def build_data(root, map_id):
+    block = map_block(map_id)
+    directory = root / map_id
     with gzip.open(directory / 'navmesh.json.gz', 'rt', encoding='utf-8') as stream:
         navigation = json.load(stream)
     with gzip.open(directory / 'placements.json.gz', 'rt', encoding='utf-8') as stream:
@@ -40,28 +55,66 @@ def prepare(root, output):
         for i, edge in enumerate(mesh['edges']):
             if edge[3] == 0xffffffff and (section, i) not in linked_edges:
                 boundaries.append([mesh['vertices'][edge[0]], mesh['vertices'][edge[1]]])
-    data = bytearray(b'ERDNG001' + bytes([30,0,0,0]) + struct.pack('<II', len(triangles), len(boundaries)))
+    if not 0 < len(triangles) <= 200_000 or len(boundaries) > 200_000:
+        raise ValueError(f'{map_id}: empty or oversized dungeon data')
+    data = bytearray(b'ERDNG001' + block + struct.pack('<II', len(triangles), len(boundaries)))
     for points, section in triangles:
         values = [v for p in points for v in p]
         if not all(math.isfinite(x) for x in values): raise ValueError('Invalid coordinate')
         data.extend(struct.pack('<9fI', *values, section))
     for points in boundaries:
-        data.extend(struct.pack('<6f', *(v for p in points for v in p)))
-    output.mkdir(parents=True, exist_ok=True)
-    path = output / 'tombsward.nav'
-    path.write_bytes(data)
-    info = dict(map_id='m30_00_00_00', triangles=len(triangles), boundary_segments=len(boundaries),
+        values = [v for p in points for v in p]
+        if not all(math.isfinite(x) for x in values): raise ValueError('Invalid boundary coordinate')
+        data.extend(struct.pack('<6f', *values))
+    info = dict(map_id=map_id, triangles=len(triangles), boundary_segments=len(boundaries),
                 bytes=len(data), sha256=hashlib.sha256(data).hexdigest(),
                 source_navmesh_sha256=hashlib.sha256((directory/'navmesh.json.gz').read_bytes()).hexdigest(),
+                source_placements_sha256=hashlib.sha256((directory/'placements.json.gz').read_bytes()).hexdigest(),
                 limitations=['AI walkable surfaces, not physical walls or verified room boundaries.',
-                             'Vanilla Tombsward Catacombs only; live alignment requires gameplay verification.'])
+                             'Vanilla layout only; live alignment requires gameplay verification.'])
+    return data, info
+
+
+def prepare(root, output):
+    data, info = build_data(root, 'm30_00_00_00')
+    output.mkdir(parents=True, exist_ok=True)
+    (output/'tombsward.nav').write_bytes(data)
     (output/'dungeon-data.json').write_text(json.dumps(info,indent=2)+'\n',encoding='utf-8')
     print(json.dumps(info,indent=2))
+
+
+def prepare_small_dungeons(root, output):
+    with (root/'maps.csv').open(encoding='utf-8-sig', newline='') as stream:
+        records = [row for row in csv.DictReader(stream) if map_block(row['map_id'])[0] in SMALL_AREAS]
+    ids = [row['map_id'] for row in records]
+    if not records or len(ids) != len(set(ids)):
+        raise ValueError('Missing or duplicate dungeon map records')
+    destination = output/'dungeons'
+    destination.mkdir(parents=True, exist_ok=True)
+    maps = []
+    for record in sorted(records, key=lambda row: row['map_id']):
+        map_id = record['map_id']
+        data, info = build_data(root, map_id)
+        info['name'] = record['name'] or map_id
+        if any(c in info['name'] for c in '\t\r\n'):
+            raise ValueError('Invalid map display name')
+        (destination/f'{map_id}.nav').write_bytes(data)
+        maps.append(info)
+    (destination/'maps.tsv').write_text('map_id\tname\n'+''.join(
+        f"{row['map_id']}\t{row['name']}\n" for row in maps), encoding='utf-8')
+    receipt = dict(maps=maps, count=len(maps),
+                   base_game=sum(map_block(row['map_id'])[0] < 40 for row in maps),
+                   dlc=sum(map_block(row['map_id'])[0] >= 40 for row in maps))
+    (destination/'data-manifest.json').write_text(json.dumps(receipt,indent=2)+'\n',encoding='utf-8')
+    print(f"Prepared {len(maps)} small dungeon maps ({receipt['base_game']} base game, {receipt['dlc']} DLC).")
 
 
 if __name__ == '__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('root', type=Path)
     parser.add_argument('output', type=Path)
+    parser.add_argument('--small-dungeons', action='store_true', help='Also generate base/DLC caves, catacombs, tunnels, gaols and forges')
     args=parser.parse_args()
     prepare(args.root,args.output)
+    if args.small_dungeons:
+        prepare_small_dungeons(args.root,args.output)

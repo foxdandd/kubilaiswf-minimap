@@ -3,6 +3,7 @@ use std::io;
 use std::path::Path;
 use std::collections::HashMap;
 
+#[cfg(test)]
 pub const PILOT_BLOCK: [u8; 4] = [30, 0, 0, 0];
 pub const ZOOM: [f32; 3] = [15.0, 30.0, 60.0];
 pub type Point = [f32; 3];
@@ -60,13 +61,19 @@ impl DungeonMap {
         Self::decode(&std::fs::read(path)?)
     }
 
+    pub fn load_for_block(path: &Path, block: [u8;4]) -> io::Result<Self> {
+        let map=Self::load(path)?;
+        if map.block!=block {return Err(invalid("dungeon file belongs to another map"));}
+        Ok(map)
+    }
+
     pub fn decode(data: &[u8]) -> io::Result<Self> {
         if data.len() < 20 || &data[..8] != b"ERDNG001" {
             return Err(invalid("invalid dungeon data header"));
         }
         let block: [u8; 4] = data[8..12].try_into().unwrap();
-        if block != PILOT_BLOCK {
-            return Err(invalid("this test supports Tombsward Catacombs only"));
+        if !(10..60).contains(&block[0]) || block.iter().any(|&v|v>99) {
+            return Err(invalid("invalid non-overworld dungeon block"));
         }
         let n = u32::from_le_bytes(data[12..16].try_into().unwrap()) as usize;
         let b = u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize;
@@ -331,16 +338,18 @@ mod tests {
         assert!(clip_segment_height([[0.,8.,0.],[1.,8.,0.]],0.,2.).is_none());
     }
     #[test]
-    fn decoder_rejects_truncation_nan_and_wrong_map() {
+    fn decoder_accepts_other_dungeons_and_rejects_bad_data() {
         let mut data = b"ERDNG001".to_vec(); data.extend(PILOT_BLOCK);
         data.extend(1u32.to_le_bytes()); data.extend(0u32.to_le_bytes());
         for p in triangle(0.).points { for x in p { data.extend(x.to_le_bytes()); } }
         data.extend(0u32.to_le_bytes());
         assert!(DungeonMap::decode(&data).is_ok());
         assert!(DungeonMap::decode(&data[..data.len()-1]).is_err());
+        data[8]=31; assert!(DungeonMap::decode(&data).is_ok());
+        data[8]=60; assert!(DungeonMap::decode(&data).is_err());
+        data[8]=30;
         data[20..24].copy_from_slice(&f32::NAN.to_le_bytes());
         assert!(DungeonMap::decode(&data).is_err());
-        data[8]=31; assert!(DungeonMap::decode(&data).is_err());
     }
     #[test]
     #[ignore = "Requires TOMBSWARD_NAV_TEST_FILE generated from the local game"]
