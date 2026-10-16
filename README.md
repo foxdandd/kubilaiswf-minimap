@@ -123,6 +123,8 @@ Pilot 4 passed **21 automated tests** using local game data. This included decod
 
 Gameplay verification is still incomplete. DLC alignment, marker placement, floor hints and performance with other overlays need in-game checks.
 
+If the game closes or freezes at startup with QuestPath enabled, set `renderer = window` under `[overlay_render]` in `QuestPath.ini`, then restart. This uses QuestPath's supported separate-window renderer. The local combined profile passed a 60-second game-window response check with this setting and the unchanged pilot 4 minimap DLL. This is a configuration workaround, not a general fix for graphics-hook conflicts. See [the startup regression check](TESTING.md#questpath-startup-regression); character loading and overlay appearance still need gameplay testing.
+
 - Detailed interior layouts for large legacy dungeons are not included. Where available, those areas use the ordinary world-map view.
 - Doors, lifts, traps and other changing geometry are not tracked.
 - AI navigation surfaces can differ from paths the player can reach.

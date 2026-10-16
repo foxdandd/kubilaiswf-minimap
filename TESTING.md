@@ -95,6 +95,47 @@ To disable the experimental mode set `dungeon_mode = false` and restart.
 - If geometry cannot load, `minimap-test.log` records the data error and the normal
   minimap remains active. No gameplay success is implied by successful data loading.
 
+## QuestPath startup regression
+
+The local combined profile closed within about 7 seconds with QuestPath's
+`ingame` renderer and the minimap enabled. Removing either mod allowed startup.
+Windows reported stack overflow failures, often inside Steam's overlay module.
+This narrows the problem to interacting graphics hooks, but does not identify
+which component creates the recursive call chain.
+
+QuestPath's own INI documents a supported alternative for crashes or freezes:
+
+```ini
+[overlay_render]
+renderer = window
+```
+
+Change this setting in `QuestPath.ini`, next to `QuestPath.dll`, then restart.
+It draws QuestPath in a separate transparent window. The local game already used
+borderless mode; exclusive fullscreen, HDR and other display setups are untested.
+This leaves both mods enabled and does not require a new minimap DLL.
+
+With the original pilot 4 DLL and this one setting changed, the full original
+profile passed a 60-second startup check. The check found the actual Elden Ring
+window and confirmed it responded, separately from QuestPath's overlay window.
+Character loading, visible overlays, alignment and long sessions remain untested.
+An attempted minimap hook change passed once but failed on retest and was discarded.
+
+Geometry/unit tests cannot reproduce this interaction: it needs a real DirectX 12
+game process, QuestPath and the usual overlays. Use a test profile for the check:
+
+```powershell
+pwsh -NoProfile -File .\tools\check-startup.ps1 `
+  -ProfilePath 'C:\path\to\test.me3' `
+  -GameExe 'C:\path\to\ELDEN RING\Game\eldenring.exe' `
+  -Seconds 60
+```
+
+The check records startup results under `dist/startup-check`, exits nonzero if
+the game closes or stays unresponsive, and closes only the game process it starts.
+The game can update the profile's save during startup. Loading a character and
+checking visible overlays still require a separate gameplay test.
+
 ## Build and data
 
 Run `cargo build --release --locked` and `cargo test --release --lib --locked`.
