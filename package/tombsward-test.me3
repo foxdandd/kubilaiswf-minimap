@@ -1,0 +1,9 @@
+profileVersion = "v1"
+start_online = false
+savefile = "ER0000_MINIMAP_TOMBSWARD_TEST.mod"
+
+[[supports]]
+game = "eldenring"
+
+[[natives]]
+path = 'tombsward-minimap-test.dll'

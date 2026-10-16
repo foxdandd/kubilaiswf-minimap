@@ -1,5 +1,6 @@
 mod archive;
 mod config;
+mod dungeon;
 mod formats;
 mod game;
 mod maptiles;
@@ -60,8 +61,17 @@ fn init(module: usize) {
     };
     let dll = dll_path(module);
     let config = config::Config::load(&dll.with_file_name("minimap.ini"));
+    let dungeon = if config.dungeon_mode {
+        match dungeon::DungeonMap::load(&dll.with_file_name("tombsward.nav")) {
+            Ok(map) => Some(map),
+            Err(error) => {
+                let _ = std::fs::write(dll.with_file_name("minimap-test.log"), format!("Dungeon mode unavailable: {error}\n"));
+                None
+            }
+        }
+    } else { None };
     let _ = Hudhook::builder()
-        .with::<ImguiDx12Hooks>(minimap::Minimap::new(&game_dir, config))
+        .with::<ImguiDx12Hooks>(minimap::Minimap::new(&game_dir, config, dungeon))
         .build()
         .apply();
 }

@@ -1,2 +1,5 @@
 /target
 /dist
+*.nav
+*.log
+__pycache__/
