@@ -1,90 +1,143 @@
-# kubilaiswf's Minimap
+# Elden Ring Dungeon Minimap
 
-A minimap for Elden Ring that looks like it belongs in the game. Loaded with [me3](https://github.com/garyttierney/me3).
+An experimental fork of [kubilaiswf's Minimap](https://github.com/kubilaiswf/kubilaiswf-minimap), with navigation layouts for **60 small-dungeon map areas**, floor height cues, and the **Shadow of the Erdtree outdoor map**.
 
-Experimental local development: an optional navigation-layout mode for 60 small
-dungeon map blocks (48 base game, 12 DLC) is documented in [TESTING.md](TESTING.md).
-It loads the current map in the background and retains pilot 2's height display.
-Generate the dungeon data locally;
-it is not embedded in the DLL or committed to this source repository.
+**Development code:** [codex/tombsward-pilot](https://github.com/foxdandd/kubilaiswf-minimap/tree/codex/tombsward-pilot). Build this branch to use the features below. The original project's releases do not include this fork's additions.
 
-- the game's own map, read from your install at runtime (no game files are shipped)
-- Shadow of the Erdtree outdoor map, including DLC graces, points and numbered beacons
-- fully revealed, works in the overworld, legacy dungeons and underground
-- rotates with the camera, the arrow follows where you face
-- discovered graces, numbered beacons (1-5) and world map points
-- [Map for Goblins](https://www.nexusmods.com/eldenring/mods/3091) markers show up too and disappear once looted
-- optional trail of where you've been
-- hides in menus, the world map and loading screens
+## What this fork adds
+
+| Feature | Current coverage |
+| --- | --- |
+| Small-dungeon layouts | 48 base-game and 12 DLC map areas, loaded automatically when you enter them |
+| Floor height display | Gold for the current level, dim blue for paths above, dim brown for paths below |
+| Slope hints | Direction arrows and signed height differences, such as `+5 m` or `-3 m` |
+| Shadow of the Erdtree | Outdoor terrain read from the installed game, with DLC graces, map points and numbered beacons |
+
+Dungeon maps load in the background. The display clears the old layout when you change areas, smooths floor selection on stairs, and reduces overlapping labels.
+
+The original circular frame, camera rotation, outdoor trail, discovered graces and map points remain available. World-map terrain is fully revealed on the minimap; this does not grant map fragments or change discovery flags in your save.
+
+The dungeon layouts come from AI navigation surfaces. They show walkable geometry, **not verified room boundaries or physical walls**. The count is 60 map areas, not 60 confirmed distinct dungeons; one forge area has no name and is shown by its map ID.
 
 ## Requirements
 
-- me3
-- Elden Ring 1.17.1 (exe 2.7.1.0). On any other version the mod turns itself off.
+- Elden Ring 1.17.1, executable version **2.7.1.0**. The DLL disables itself on other executable versions.
+- [ME3](https://github.com/garyttierney/me3), using an offline profile.
+- Your own installed game files. DLC access requires Shadow of the Erdtree.
+- Locally generated navigation data for the optional dungeon layouts.
 
-## Install
+## Build from source
 
-1. Download the zip from [Releases](https://github.com/kubilaiswf/kubilaiswf-minimap/releases) and extract the `kubilaiswf-minimap` folder anywhere.
-2. Double click `kubilaiswf-minimap.me3`.
+Use the development branch:
 
-To use it with another me3 mod, add this to that mod's `.me3` file. If the file has an empty `natives = []` line, delete that line.
+```powershell
+git clone --branch codex/tombsward-pilot https://github.com/foxdandd/kubilaiswf-minimap.git
+cd kubilaiswf-minimap
+cargo build --release --locked
+cargo test --release --lib --locked
+```
+
+The DLL is written to `target/release/kubilaiswf_minimap.dll`. Base-game and DLC world-map textures are read directly from your install; they need no separate map download. Tests that require local game data are ignored by the basic test command.
+
+### Optional dungeon test package
+
+The dungeon generator currently requires existing SoulsFormats/HKLib navigation exports. It cannot yet create the dungeon data directly from a raw game install, and the earlier navigation exporter is not included in this fork.
+
+With those exports available, use Python and PowerShell to build the test package:
+
+```powershell
+pwsh -NoProfile -File .\tools\build-pilot.ps1 `
+  -NavigationRoot 'C:\path\to\navigation-exports' `
+  -OutputRoot '.\dist\Dungeon-Minimap-Test' `
+  -SmallDungeons `
+  -WorldMapGameRoot 'C:\path\to\ELDEN RING\Game'
+```
+
+The package contains `tombsward-minimap-test.dll`, `minimap.ini`, the `dungeons` directory and an isolated `dungeon-test.me3` profile. The DLL keeps its earlier test filename even though it now supports more areas.
+
+`-WorldMapGameRoot` enables the real-game DLC tile tests. It is optional when building. GNU Windows builds need an ASCII toolchain/build path; the script accepts `-CargoHome`, `-RustupHome`, `-GccBin` and `-BuildRoot` for this setup.
+
+See [TESTING.md](https://github.com/foxdandd/kubilaiswf-minimap/blob/codex/tombsward-pilot/TESTING.md) for data preparation, build options and gameplay checks. Generated navigation files and test archives are kept local and are not committed to this repository.
+
+## Use with an existing ME3 profile
+
+1. Exit the game and place the built DLL in its own mod folder.
+2. Keep `minimap.ini` next to the DLL. For dungeon layouts, also copy the complete `dungeons` directory there and set `dungeon_mode = true`.
+3. Add one native entry to your existing `.me3` profile, keeping its current mods and save settings.
+
+For a built test package copied to `natives/DungeonMinimap`:
 
 ```toml
 [[natives]]
-path = 'C:\path\to\kubilaiswf-minimap\kubilaiswf-minimap.dll'
+path = 'natives/DungeonMinimap/tombsward-minimap-test.dll'
 ```
 
-If that line lists other DLLs, keep it and add this one inside the brackets instead:
+For a plain Cargo build, use the actual filename `kubilaiswf_minimap.dll` instead. Load one minimap DLL per profile and keep the profile offline with `start_online = false`.
 
-```toml
-natives = [ { path = 'C:\some\other\mod.dll' }, { path = 'C:\path\to\kubilaiswf-minimap\kubilaiswf-minimap.dll' } ]
-```
+The package's separate `dungeon-test.me3` is an alternative for isolated testing. It uses `ER0000_MINIMAP_TOMBSWARD_TEST.mod`; ME3 copies the normal save on first use, so this does not automatically create a fresh character.
 
 ## Controls
 
-- F9 show / hide
-- F10 zoom (40 / 80 / 160 m)
+| Action | Default key |
+| --- | --- |
+| Show or hide the minimap | F9 |
+| Change zoom | F10 |
+| Cycle layered / current level / all levels | F11 |
 
-Both keys can be changed in `minimap.ini`.
+Outdoor zoom uses a 40 / 80 / 160 m radius. Supported dungeon layouts use 15 / 30 / 60 m. Floor view starts in layered mode, with nearby upper and lower paths visible within 8 m vertically.
+
+If other mods already use F9-F11, you can use this alternative in `minimap.ini`:
+
+```ini
+toggle_key = F6
+zoom_key = F7
+dungeon_floor_key = F8
+```
 
 ## Settings
 
-`minimap.ini` next to the dll, created on first launch. Restart the game after changing it.
+Settings are read from `minimap.ini` next to the DLL at game startup. Restart after changing them.
 
 ```ini
-trail = true                 ; path you walked
-rotate = true                ; false keeps north up
-compass = true               ; N / E / S / W letters
-hide_in_boss_fights = false  ; hide while a boss health bar is up
-hide_in_caves = true         ; hide in catacombs, caves and tunnels
-size = 1.0                   ; 0.5 to 2.5
-margin = 24                  ; distance from the top right corner, pixels at 1080p
-toggle_key = F9              ; F1-F12, A-Z, 0-9, PageUp, Keypad0... or none
+trail = true
+rotate = true
+compass = true
+hide_in_boss_fights = false
+hide_in_caves = true
+size = 1.0
+margin = 24
+toggle_key = F9
 zoom_key = F10
+dungeon_mode = false
+dungeon_height_band = 2.0
+dungeon_floor_key = F11
 ```
 
-## Known limitations
+- `rotate = false` keeps north up.
+- `size` accepts 0.5-2.5; `margin` is measured in pixels at 1080p.
+- `dungeon_mode = true` enables supported layouts when local data is present. The test package enables it by default.
+- `dungeon_height_band` sets the metres above and below the selected floor to highlight in gold; accepts 0.5-5.0, default 2 m.
+- `hide_in_caves` still applies when no supported dungeon layout is active.
 
-- DLC outdoor alignment still needs in-game verification; small dungeon layouts are experimental
-- Map for Goblins icons are simple shapes, not the game's icons
-- offline only
+## Test status and limits
 
-## Building
+Pilot 4 passed **21 automated tests** using local game data. This included decoding **1,681 DLC map tiles**, switching between DLC and base-game tile windows, and drawing **1,080 dungeon frames** across the 60 map areas, sampled heights, views and zoom levels.
 
-```
-cargo build --release
-me3 launch --profile minimap.me3
-```
+Gameplay verification is still incomplete. DLC alignment, marker placement, floor hints and performance with other overlays need in-game checks.
 
-`minimap.me3` loads `target/release/kubilaiswf_minimap.dll`.
+- Detailed interior layouts for large legacy dungeons are not included. Where available, those areas use the ordinary world-map view.
+- Doors, lifts, traps and other changing geometry are not tracked.
+- AI navigation surfaces can differ from paths the player can reach.
+- Dungeon icons and trails are not yet drawn in the detailed layout view.
+- Navigation data is based on vanilla layouts; overhaul mods may change them.
+- World-map icons, including [Map for Goblins](https://www.nexusmods.com/eldenring/mods/3091) points, use simple shapes.
 
-## Credits
+## Credits and license
 
-- [fromsoftware-rs](https://github.com/vswarte/fromsoftware-rs) for the game structures
-- [hudhook](https://github.com/veeenu/hudhook) for the overlay
-- [soarqin/EROverlay](https://github.com/soarqin/EROverlay) for documenting the beacon and map point logic
-- [SoulsFormats](https://github.com/soulsmods/SoulsFormatsNEXT), [UXM](https://github.com/Nordgaren/UXM-Selective-Unpack) and [Smithbox](https://github.com/vawser/Smithbox) for file format and map research
+- [kubilaiswf](https://github.com/kubilaiswf/kubilaiswf-minimap) — original minimap, artwork and implementation.
+- [fromsoftware-rs](https://github.com/vswarte/fromsoftware-rs) — game structures.
+- [hudhook](https://github.com/veeenu/hudhook) — overlay rendering.
+- [soarqin/EROverlay](https://github.com/soarqin/EROverlay) — beacon and map-point research.
+- [SoulsFormats](https://github.com/soulsmods/SoulsFormatsNEXT), [UXM](https://github.com/Nordgaren/UXM-Selective-Unpack) and [Smithbox](https://github.com/vawser/Smithbox) — file formats and map research.
 
-## License
-
-MIT, see [LICENSE](LICENSE). Use it however you like, just keep the credit.
+MIT, inherited from the original project. Keep the copyright notice and [LICENSE](LICENSE).
