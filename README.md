@@ -1,8 +1,8 @@
-# Elden Ring Dungeon Minimap
+# kubilaiswf's Minimap - Rotating Map Overlay (Map for Goblins Compatible) + Dungeon Layouts & Shadow of the Erdtree Map
 
-An experimental fork of [kubilaiswf's Minimap](https://github.com/kubilaiswf/kubilaiswf-minimap), with navigation layouts for **60 small-dungeon map areas**, floor height cues, and the **Shadow of the Erdtree outdoor map**.
+An enhanced fork of [kubilaiswf's Minimap](https://github.com/kubilaiswf/kubilaiswf-minimap). It keeps the original rotating map overlay and Map for Goblins compatibility, and adds navigation layouts for **60 small-dungeon map areas**, floor height cues, and the **Shadow of the Erdtree outdoor map**.
 
-**Development code:** [codex/tombsward-pilot](https://github.com/foxdandd/kubilaiswf-minimap/tree/codex/tombsward-pilot). Build this branch to use the features below. The original project's releases do not include this fork's additions.
+These additions are carried on `main`. The original project's releases do not include them.
 
 ## What this fork adds
 
@@ -28,10 +28,8 @@ The dungeon layouts come from AI navigation surfaces. They show walkable geometr
 
 ## Build from source
 
-Use the development branch:
-
 ```powershell
-git clone --branch codex/tombsward-pilot https://github.com/foxdandd/kubilaiswf-minimap.git
+git clone https://github.com/foxdandd/kubilaiswf-minimap.git
 cd kubilaiswf-minimap
 cargo build --release --locked
 cargo test --release --lib --locked
@@ -57,7 +55,7 @@ The package contains `tombsward-minimap-test.dll`, `minimap.ini`, the `dungeons`
 
 `-WorldMapGameRoot` enables the real-game DLC tile tests. It is optional when building. GNU Windows builds need an ASCII toolchain/build path; the script accepts `-CargoHome`, `-RustupHome`, `-GccBin` and `-BuildRoot` for this setup.
 
-See [TESTING.md](https://github.com/foxdandd/kubilaiswf-minimap/blob/codex/tombsward-pilot/TESTING.md) for data preparation, build options and gameplay checks. Generated navigation files and test archives are kept local and are not committed to this repository.
+See [TESTING.md](TESTING.md) for data preparation, build options and gameplay checks. Generated navigation files and test archives are kept local and are not committed to this repository.
 
 ## Use with an existing ME3 profile
 
