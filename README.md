@@ -9,6 +9,7 @@ Generate the dungeon data locally;
 it is not embedded in the DLL or committed to this source repository.
 
 - the game's own map, read from your install at runtime (no game files are shipped)
+- Shadow of the Erdtree outdoor map, including DLC graces, points and numbered beacons
 - fully revealed, works in the overworld, legacy dungeons and underground
 - rotates with the camera, the arrow follows where you face
 - discovered graces, numbered beacons (1-5) and world map points
@@ -64,7 +65,7 @@ zoom_key = F10
 
 ## Known limitations
 
-- no Shadow of the Erdtree map yet, DLC areas get a plain compass
+- DLC outdoor alignment still needs in-game verification; small dungeon layouts are experimental
 - Map for Goblins icons are simple shapes, not the game's icons
 - offline only
 

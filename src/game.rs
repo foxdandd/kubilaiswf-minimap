@@ -133,8 +133,9 @@ fn locate(block: BlockId, local: [f32; 2]) -> ([f32; 2], i32, Option<MapId>) {
             local[0] + f32::from(block.block()) * tile + center,
             local[1] + f32::from(block.region()) * tile + center,
         ];
-        // The Shadow of the Erdtree map (area 61) isn't calibrated yet.
-        let map = (block.area() == 60).then_some(MapId::Overworld);
+        let map = match block.area() {
+            60=>Some(MapId::Overworld),61=>Some(MapId::ShadowRealm),_=>None,
+        };
         return (position, i32::from(block.area()), map);
     }
     // Roundtable Hold has a world map spot but isn't anywhere on the map itself.
@@ -143,17 +144,54 @@ fn locate(block: BlockId, local: [f32; 2]) -> ([f32; 2], i32, Option<MapId>) {
     let Some(conversion) = conversion else {
         return (local, i32::from(block), None);
     };
+    locate_legacy(block.area(),local,conversion)
+}
+
+fn locate_legacy(area:u8, local:[f32;2], conversion:&Conversion) -> ([f32;2],i32,Option<MapId>) {
     let position = [
         local[0] + conversion.offset[0],
         local[1] + conversion.offset[1],
     ];
     // Underground areas share the overworld's coordinates but have their own map.
-    let (space, map) = match (conversion.dst_area, block.area()) {
+    let (space, map) = match (conversion.dst_area, area) {
         (60, 12) => (12, Some(MapId::Underground)),
         (60, _) => (60, Some(MapId::Overworld)),
+        (61, _) => (61, Some(MapId::ShadowRealm)),
         (area, _) => (i32::from(area), None),
     };
     (position, space, map)
+}
+
+#[cfg(test)]
+mod map_location_tests {
+    use super::*;
+
+    #[test]
+    fn base_and_dlc_worlds_use_separate_maps_at_every_grid_level() {
+        let world=[46.*256.+61.56,40.*256.+34.086];
+        for (area,map) in [(60,MapId::Overworld),(61,MapId::ShadowRealm)] {
+            for level in 0..3 {
+                let tile=(256u32<<level) as f32;
+                let grid=[46>>level,40>>level];
+                let local=std::array::from_fn(|axis|world[axis]-grid[axis] as f32*tile-(tile-256.)*0.5);
+                let (position,space,selected)=locate(BlockId::from_parts(area,grid[0],grid[1],level),local);
+                assert_eq!(selected,Some(map));assert_eq!(space,area as i32);
+                assert!((0..2).all(|axis|(position[axis]-world[axis]).abs()<0.002));
+            }
+        }
+    }
+
+    #[test]
+    fn dlc_legacy_conversion_keeps_the_shadow_realm_atlas() {
+        // WorldMapLegacyConvParam row 1100: Belurat's local origin -> m61_44_43.
+        let mut conversion=Conversion {src:(20,0,0),src_pos:[0.,0.],dst_area:61,
+            offset:[44.*256.+108.45,43.*256.-90.97]};
+        let (position,space,map)=locate_legacy(20,[0.,0.],&conversion);
+        assert_eq!(position,conversion.offset);assert_eq!(space,61);assert_eq!(map,Some(MapId::ShadowRealm));
+        conversion.dst_area=60;
+        assert_eq!(locate_legacy(12,[0.,0.],&conversion).2,Some(MapId::Underground));
+        assert_eq!(locate_legacy(10,[0.,0.],&conversion).2,Some(MapId::Overworld));
+    }
 }
 
 /// One row of WorldMapLegacyConvParam: a point in a dungeon and where the world map draws it.
@@ -278,17 +316,14 @@ struct MarkerSlot {
     /// Game world map coordinates, see `maptiles::from_game_map`.
     x: f32,
     y: f32,
-    /// 0 for the overworld map, 1 for the underground map.
+    /// 0 for the overworld map, 1 for underground, 10 for Shadow of the Erdtree.
     map: u8,
     icon: u8,
     _pad: [u8; 2],
 }
 
 fn placed_beacons(map: MapId) -> Vec<Beacon> {
-    let wanted_map = match map {
-        MapId::Overworld => 0,
-        MapId::Underground => 1,
-    };
+    let wanted_map = map.marker_id();
     // SAFETY: read on a game task, so the menu objects aren't being torn down meanwhile;
     // every pointer in the chain is checked before it's followed.
     unsafe {
@@ -341,6 +376,7 @@ struct PointRow {
     space: i32,
     on_overworld: bool,
     on_underground: bool,
+    on_shadow_realm: bool,
     icon: u16,
     alt_icon: u16,
     open_flag: u32,
@@ -372,6 +408,7 @@ fn visible_points(map: MapId, position: [f32; 2], space: i32) -> Vec<MapPoint> {
         .filter(|row| match map {
             MapId::Overworld => row.on_overworld,
             MapId::Underground => row.on_underground,
+            MapId::ShadowRealm => row.on_shadow_realm,
         })
         .filter(|row| {
             row.space == space
@@ -510,6 +547,7 @@ fn points() -> Option<&'static [PointRow]> {
                 space,
                 on_overworld: row.disp_mask00(),
                 on_underground: row.disp_mask01(),
+                on_shadow_realm: row.disp_mask02(),
                 icon: row.icon_id(),
                 alt_icon: row.alt_icon_id(),
                 open_flag: row.event_flag_id(),

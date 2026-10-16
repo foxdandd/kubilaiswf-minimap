@@ -6,6 +6,7 @@ param(
     [string]$CargoHome = '',
     [string]$RustupHome = '',
     [string]$GccBin = '',
+    [string]$WorldMapGameRoot = '',
     [switch]$Offline,
     [switch]$SmallDungeons
 )
@@ -44,6 +45,8 @@ $env:TOMBSWARD_NAV_TEST_FILE = Join-Path $OutputRoot 'tombsward.nav'
 if ($SmallDungeons) { $env:DUNGEON_NAV_TEST_DIR=Join-Path $OutputRoot 'dungeons' }
 else { Remove-Item Env:DUNGEON_NAV_TEST_DIR -ErrorAction SilentlyContinue }
 $testOptions=@('--include-ignored')
+if ($WorldMapGameRoot) { $env:MINIMAP_WORLD_TEST_ROOT=[IO.Path]::GetFullPath($WorldMapGameRoot) }
+else { $testOptions+=@('--skip','real_dlc_atlas_selects_and_decodes_game_tiles') }
 if (-not $SmallDungeons) { $testOptions+=@('--skip','real_maps_decode_and_background_loader_switches_exact_blocks','--skip','all_small_dungeons_render_at_multiple_heights_views_and_zooms','--skip','dungeon_selection_clears_old_geometry_during_rapid_warps') }
 & cargo test --release --lib @common -- @testOptions
 if ($LASTEXITCODE -ne 0) { throw 'Geometry/data tests failed' }

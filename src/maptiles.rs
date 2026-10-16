@@ -26,6 +26,7 @@ const EMPTY: [u8; 4] = [40, 34, 26, 255];
 pub enum MapId {
     Overworld,
     Underground,
+    ShadowRealm,
 }
 
 impl MapId {
@@ -33,13 +34,18 @@ impl MapId {
         match name {
             "M00" => Some(Self::Overworld),
             "M01" => Some(Self::Underground),
+            "M10" => Some(Self::ShadowRealm),
             _ => None,
         }
+    }
+
+    pub fn marker_id(self) -> u8 {
+        match self {Self::Overworld=>0,Self::Underground=>1,Self::ShadowRealm=>10}
     }
 }
 
 /// Converts an overworld-aligned position (meters, see `game.rs`) to menu map pixels, Y up.
-/// Map cell (i, j) shows overworld tile m60_{i+28}_{j+24}_00, centers aligned.
+/// Map cell (i, j) shows m60/m61_{i+28}_{j+24}_00, centers aligned.
 pub fn map_pixel([x, z]: [f32; 2]) -> [f32; 2] {
     const HALF: f32 = TILE as f32 / 2.0;
     [x + HALF - 28.0 * TILE as f32, z + HALF - 24.0 * TILE as f32]
@@ -54,6 +60,91 @@ pub fn from_game_map([x, y]: [f32; 2]) -> [f32; 2] {
         x - HALF + 28.0 * TILE as f32,
         y_up - HALF + 24.0 * TILE as f32,
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shadow_realm_uses_its_own_atlas_and_marker_layer() {
+        assert_eq!(MapId::from_name("M10"),Some(MapId::ShadowRealm));
+        assert_eq!(MapId::ShadowRealm.marker_id(),10);
+        assert_eq!(MapId::Overworld.marker_id(),0);
+        assert_eq!(MapId::Underground.marker_id(),1);
+        assert_eq!(MapId::from_name("M11"),None);
+    }
+
+    #[test]
+    fn dlc_marker_coordinates_round_trip_and_keep_tile_scale() {
+        // Gravesite Plain, BonfireWarpParam row 61464000 from the local vanilla regulation.
+        let world=[46.*256.+61.56,40.*256.+34.086];
+        let pixel=map_pixel(world);
+        assert!((pixel[0]-4797.56).abs()<0.002 && (pixel[1]-4258.086).abs()<0.002);
+        let recovered=from_game_map([pixel[0],41.*TILE as f32-pixel[1]]);
+        assert!((0..2).all(|axis|(world[axis]-recovered[axis]).abs()<0.002));
+        let neighbour=map_pixel([world[0]+256.,world[1]+256.]);
+        assert!((0..2).all(|axis|(neighbour[axis]-pixel[axis]-256.).abs()<0.002));
+    }
+
+    #[test]
+    #[ignore="Requires MINIMAP_WORLD_TEST_ROOT pointing to the local game"]
+    fn real_dlc_atlas_selects_and_decodes_game_tiles() {
+        let root=std::env::var_os("MINIMAP_WORLD_TEST_ROOT").expect("Set local game root");
+        let root=Path::new(&root);
+        let oodle=Oodle::load(&root.join("oo2core_6_win64.dll")).unwrap();
+        let masks=read_masks(&oodle.decompress_dcx(&archive::open(root,"/menu/71_maptile.mtmskbnd.dcx").unwrap().read_all().unwrap()).unwrap()).unwrap();
+        let tiles=select_tiles(read_binder(&archive::open(root,"/menu/71_maptile.tpfbhd").unwrap().read_all().unwrap()).unwrap(),&masks);
+        let selected:Vec<_>=tiles.iter().filter(|((map,_),_)|*map==MapId::ShadowRealm).collect();
+        assert!(selected.len()>500,"DLC atlas omitted: {} selected cells",selected.len());
+        // Sample grace locations spanning the DLC, independent of the navmesh pilot.
+        for cell in [[18,16],[20,21],[22,17],[25,15]] {
+            assert!(tiles.contains_key(&(MapId::ShadowRealm,cell)),"missing DLC cell {cell:?}");
+        }
+        let mut bdt=archive::open(root,"/menu/71_maptile.tpfbdt").unwrap();
+        let preview=std::env::var_os("MINIMAP_WORLD_PREVIEW_DIR");
+        const SIDE:usize=41*64;
+        let mut mosaic=preview.as_ref().map(|_|vec![0u8;SIDE*SIDE*4]);
+        let mut decoded=0;
+        for (&(_,cell),entry) in selected {
+            let rgba=decode_tile(&oodle,&bdt.read_at(entry.offset,entry.size).unwrap()).unwrap();
+            assert_eq!(rgba.len(),TILE*TILE*4);
+            decoded+=1;
+            if let Some(mosaic)=&mut mosaic {
+                for y in 0..64 {for x in 0..64 {
+                    let source=((y*4)*TILE+x*4)*4;
+                    let target=(((40-cell[1] as usize)*64+y)*SIDE+cell[0] as usize*64+x)*4;
+                    mosaic[target..target+4].copy_from_slice(&rgba[source..source+4]);
+                }}
+            }
+        }
+        if let (Some(directory),Some(mosaic))=(preview,mosaic) {
+            std::fs::create_dir_all(&directory).unwrap();
+            let file=std::fs::File::create(Path::new(&directory).join("shadow-realm.png")).unwrap();
+            let mut encoder=png::Encoder::new(file,SIDE as u32,SIDE as u32);
+            encoder.set_color(png::ColorType::Rgba);encoder.set_depth(png::BitDepth::Eight);
+            encoder.write_header().unwrap().write_image_data(&mosaic).unwrap();
+        }
+        // Exercise the real asynchronous path and ensure changing worlds cannot reuse
+        // base-game pixels for the DLC even when both requests use the same tile indices.
+        let loader=Loader::spawn(root);
+        let origin=[17,15];
+        for map in [MapId::ShadowRealm,MapId::Overworld,MapId::ShadowRealm] {
+            loader.request(map,origin);
+            let window=loader.windows.lock().unwrap().recv_timeout(std::time::Duration::from_secs(20)).unwrap();
+            assert_eq!((window.map,window.origin),(map,origin));
+            for dy in 0..WINDOW_TILES {for dx in 0..WINDOW_TILES {
+                let cell=[origin[0]+dx as i32,origin[1]+dy as i32];
+                let entry=&tiles[&(map,cell)];
+                let expected=decode_tile(&oodle,&bdt.read_at(entry.offset,entry.size).unwrap()).unwrap();
+                for row in 0..TILE {
+                    let at=(((WINDOW_TILES-1-dy)*TILE+row)*WINDOW+dx*TILE)*4;
+                    assert_eq!(&window.rgba[at..at+TILE*4],&expected[row*TILE*4..(row+1)*TILE*4]);
+                }
+            }}
+        }
+        println!("Decoded {decoded} fully revealed M10 DLC cells from the original game archives.");
+    }
 }
 
 /// 3x3 map cells stitched into one RGBA image, rows top (north) first.

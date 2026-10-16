@@ -1,4 +1,4 @@
-# Small dungeon minimap pilot 3
+# Dungeon and Shadow of the Erdtree minimap pilot 4
 
 Local test build based on kubilaiswf's MIT-licensed Minimap, upstream commit
 ff2b9e4ce7b71ddcb503acd202081953183173aa. Keep the original copyright and LICENSE.
@@ -10,7 +10,16 @@ This adds an optional navigation-layout view for 60 small dungeon map blocks:
 catacomb, gaol, forge and cave blocks (m40/m41/m42/m43). The catalog includes
 one unnamed forge block, shown by its map ID. `dungeons/maps.tsv` lists the exact
 IDs and available names; the count is map blocks, not verified distinct dungeons.
-Large legacy dungeons, overworld areas and overhaul layouts are outside this build.
+Detailed navigation layouts for large legacy dungeons, overworld areas and overhaul
+layouts are outside this build. Outdoor views use the game's world-map textures.
+
+Pilot 4 adds the Shadow of the Erdtree outdoor map (area m61, atlas M10), read
+directly from the installed game's map-tile archives. No extra outdoor map download
+or generated map sidecar is needed. Like the base-game view, it shows fully revealed
+terrain without granting fragments or changing discovery/save state. Discovered
+graces, visible world-map points, numbered beacons and the optional trail now use
+the DLC's separate map identity. Legacy areas with a conversion to m61 use the DLC
+world-map view; this is not an interior room layout for those large dungeons.
 
 It draws locally generated AI walkable surfaces and their edges,
 tracks the player's block-local XYZ position, and selects a height band around
@@ -68,6 +77,10 @@ To disable the experimental mode set `dungeon_mode = false` and restart.
 
 ## Gameplay checks still required
 
+- In the DLC, check Gravesite Plain, Scadu Altus and a southern area. Compare the
+  arrow, road direction, zoom and discovered graces with the game's map. Place a
+  numbered beacon nearby and verify it belongs to the DLC map. Warp between base
+  game and DLC areas; check that tiles, trail and markers change worlds correctly.
 - At each dungeon's entrance and Site of Grace, check whether the arrow stays on the actual corridor.
 - Warp between two supported dungeons, then outdoors and back. Check the location
   caption and that the old dungeon does not appear during loading.
@@ -88,6 +101,10 @@ Run `cargo build --release --locked` and `cargo test --release --lib --locked`.
 `tools/build-pilot.ps1 -NavigationRoot PATH` performs both and makes the package.
 Add `-SmallDungeons` for this 60-map package; without it the builder retains the
 single-map pilot. The multi-map build also enables real-data catalog/loader tests.
+Add `-WorldMapGameRoot GAME_DIRECTORY` to decode and verify every selected M10
+cell from the local game, plus real asynchronous DLC/base/DLC window switching.
+Without that argument this external-data test is explicitly skipped. Set
+`MINIMAP_WORLD_PREVIEW_DIR` to write an offline atlas PNG during this test.
 Optional arguments select isolated Cargo/Rustup/GCC/build directories; `-Offline`
 uses downloaded dependencies. GNU Windows builds need an ASCII tool/build path.
 The expanded suite checks all 60 data files and renders each at three sampled
