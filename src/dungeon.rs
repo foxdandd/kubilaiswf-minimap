@@ -1,6 +1,7 @@
 //! Offline-generated navigation surfaces. No game-derived geometry is embedded in the DLL.
 use std::io;
 use std::path::Path;
+use std::collections::HashMap;
 
 pub const PILOT_BLOCK: [u8; 4] = [30, 0, 0, 0];
 pub const ZOOM: [f32; 3] = [15.0, 30.0, 60.0];
@@ -8,6 +9,8 @@ pub type Point = [f32; 3];
 
 pub struct Triangle {
     pub points: [Point; 3],
+    // Kept for source-model provenance; display colours follow height rather than model IDs.
+    #[allow(dead_code)]
     pub section: u32,
 }
 
@@ -15,6 +18,37 @@ pub struct DungeonMap {
     pub block: [u8; 4],
     pub triangles: Vec<Triangle>,
     pub boundaries: Vec<[Point; 2]>,
+    pub ramps: Vec<Ramp>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Ramp { pub bottom: Point, pub top: Point }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum View { Layered, Current, All }
+
+impl View {
+    pub fn next(self) -> Self {
+        match self { Self::Layered=>Self::Current, Self::Current=>Self::All, Self::All=>Self::Layered }
+    }
+}
+
+#[derive(Default)]
+pub struct FloorTracker { height: Option<f32>, last: Option<Point> }
+
+impl FloorTracker {
+    pub fn update(&mut self, map: &DungeonMap, player: Point, dt: f32) {
+        let target=map.floor_height(player);
+        let reset=self.last.is_none_or(|last| (last[0]-player[0]).hypot(last[2]-player[2])>12.0)
+            || self.height.is_none_or(|height| (target-height).abs()>3.0);
+        self.height=Some(if reset {target} else {
+            let height=self.height.unwrap();
+            height+(target-height)*(1.0-(-14.0*dt.clamp(0.0,0.1)).exp())
+        });
+        self.last=Some(player);
+    }
+    pub fn height(&self) -> Option<f32> {self.height}
+    pub fn reset(&mut self) {self.height=None;self.last=None;}
 }
 
 impl DungeonMap {
@@ -51,18 +85,75 @@ impl DungeonMap {
         for _ in 0..b {
             boundaries.push([read_point(data, &mut at)?, read_point(data, &mut at)?]);
         }
-        Ok(Self { block, triangles, boundaries })
+        let ramps=find_ramps(&triangles);
+        Ok(Self { block, triangles, boundaries, ramps })
     }
 
     /// Find the closest AI surface directly above/below the player's XZ, within 4 m.
     /// This follows slopes while avoiding a higher floor when the player jumps.
     pub fn floor_height(&self, player: Point) -> f32 {
-        self.triangles.iter().filter_map(|triangle| {
+        let heights: Vec<_>=self.triangles.iter().filter_map(|triangle| {
             height_at(triangle.points, [player[0], player[2]])
-        }).filter(|height| (height - player[1]).abs() <= 4.0)
-            .min_by(|a, b| (a - player[1]).abs().total_cmp(&(b - player[1]).abs()))
+        }).filter(|height| (height - player[1]).abs() <= 4.0).collect();
+        // Prefer support below the feet over a closer ceiling/upper storey while jumping.
+        heights.iter().copied().filter(|height| *height<=player[1]+0.35)
+            .min_by(|a,b| (a-player[1]).abs().total_cmp(&(b-player[1]).abs()))
+            .or_else(|| heights.into_iter().min_by(|a,b| (a-player[1]).abs().total_cmp(&(b-player[1]).abs())))
             .unwrap_or(player[1])
     }
+}
+
+fn find_ramps(triangles: &[Triangle]) -> Vec<Ramp> {
+    let mut candidates=Vec::new();
+    for triangle in triangles {
+        let min=triangle.points.iter().map(|p|p[1]).fold(f32::INFINITY,f32::min);
+        let max=triangle.points.iter().map(|p|p[1]).fold(f32::NEG_INFINITY,f32::max);
+        let span=(0..3).map(|i| {
+            let a=triangle.points[i];let b=triangle.points[(i+1)%3];(a[0]-b[0]).hypot(a[2]-b[2])
+        }).fold(0.0,f32::max);
+        if max-min>0.15 && (max-min)/span.max(0.01)>0.12 {candidates.push(triangle);}
+    }
+    let mut parents:Vec<_>=(0..candidates.len()).collect();
+    fn root(parents:&mut [usize], mut i:usize)->usize {
+        while parents[i]!=i {parents[i]=parents[parents[i]];i=parents[i];} i
+    }
+    let mut vertices=HashMap::new();
+    for (i,triangle) in candidates.iter().enumerate() {
+        for point in triangle.points {
+            let key=point.map(|v|(v*20.0).round() as i32);
+            if let Some(&other)=vertices.get(&key) {
+                let a=root(&mut parents,i);let b=root(&mut parents,other);parents[a]=b;
+            } else {vertices.insert(key,i);}
+        }
+    }
+    let mut groups:HashMap<usize,Vec<Point>>=HashMap::new();
+    for (i,triangle) in candidates.iter().enumerate() {
+        groups.entry(root(&mut parents,i)).or_default().extend(triangle.points);
+    }
+    let mut ramps=Vec::new();
+    for points in groups.values() {
+        let low=points.iter().map(|p|p[1]).fold(f32::INFINITY,f32::min);
+        let high=points.iter().map(|p|p[1]).fold(f32::NEG_INFINITY,f32::max);
+        if high-low<1.2 {continue;}
+        let average=|height:f32| {
+            let selected:Vec<_>=points.iter().filter(|p|(p[1]-height).abs()<0.2).collect();
+            std::array::from_fn(|axis| selected.iter().map(|p|p[axis]).sum::<f32>()/selected.len() as f32)
+        };
+        let bottom:Point=average(low);let top:Point=average(high);
+        let span=(top[0]-bottom[0]).hypot(top[2]-bottom[2]);
+        if (1.0..=30.0).contains(&span) {ramps.push(Ramp {bottom,top});}
+    }
+    ramps.sort_by(|a,b| (b.top[1]-b.bottom[1]).total_cmp(&(a.top[1]-a.bottom[1]))
+        .then_with(||a.bottom[0].total_cmp(&b.bottom[0])).then_with(||a.bottom[2].total_cmp(&b.bottom[2])));
+    let mut distinct:Vec<Ramp>=Vec::new();
+    for ramp in ramps {
+        if distinct.iter().all(|other| {
+            let a=[(ramp.bottom[0]+ramp.top[0])*0.5,(ramp.bottom[2]+ramp.top[2])*0.5];
+            let b=[(other.bottom[0]+other.top[0])*0.5,(other.bottom[2]+other.top[2])*0.5];
+            (a[0]-b[0]).hypot(a[1]-b[1])>3.0 || (ramp.bottom[1]-other.bottom[1]).abs()>1.5
+        }) {distinct.push(ramp);}
+    }
+    distinct
 }
 
 fn read_point(data: &[u8], at: &mut usize) -> io::Result<Point> {
@@ -172,7 +263,7 @@ mod tests {
     }
     #[test]
     fn stacked_floors_follow_player_height() {
-        let map = DungeonMap { block: PILOT_BLOCK, triangles: vec![triangle(0.0), triangle(5.0)], boundaries: vec![] };
+        let map = DungeonMap { block: PILOT_BLOCK, triangles: vec![triangle(0.0), triangle(5.0)], boundaries: vec![], ramps:vec![] };
         assert_eq!(map.floor_height([1.0, 0.2, 1.0]), 0.0);
         assert_eq!(map.floor_height([1.0, 5.2, 1.0]), 5.0);
         assert_eq!(map.floor_height([20.0, 7.0, 20.0]), 7.0);
@@ -181,6 +272,43 @@ mod tests {
     fn slopes_have_interpolated_heights() {
         assert_eq!(height_at([[0., 0., 0.], [10., 10., 0.], [0., 0., 10.]], [2., 2.]), Some(2.0));
         assert_eq!(height_at(triangle(0.).points, [9., 9.]), None);
+    }
+    #[test]
+    fn jumping_does_not_select_a_closer_upper_floor() {
+        let map=DungeonMap {block:PILOT_BLOCK,triangles:vec![triangle(0.),triangle(5.)],boundaries:vec![],ramps:vec![]};
+        assert_eq!(map.floor_height([1.,3.,1.]),0.);
+        assert_eq!(map.floor_height([1.,5.05,1.]),5.);
+        let mut tracker=FloorTracker::default();
+        tracker.update(&map,[1.,0.,1.],1./60.);
+        tracker.update(&map,[1.,3.,1.],1./60.);
+        assert_eq!(tracker.height(),Some(0.));
+        tracker.update(&map,[1.,5.05,1.],1./60.);
+        assert_eq!(tracker.height(),Some(5.));
+        let close=DungeonMap {block:PILOT_BLOCK,triangles:vec![triangle(0.),triangle(0.3)],boundaries:vec![],ramps:vec![]};
+        assert_eq!(close.floor_height([1.,0.05,1.]),0.);
+    }
+    #[test]
+    fn floor_changes_follow_slopes_smoothly_and_reset_on_warps() {
+        let slope=Triangle {points:[[0.,0.,0.],[10.,5.,0.],[0.,0.,10.]],section:0};
+        let map=DungeonMap {block:PILOT_BLOCK,triangles:vec![slope],boundaries:vec![],ramps:vec![]};
+        let mut tracker=FloorTracker::default();
+        tracker.update(&map,[0.,0.,1.],1./60.);
+        tracker.update(&map,[4.,2.,1.],1./60.);
+        assert!((0.0..2.0).contains(&tracker.height().unwrap()));
+        for _ in 0..45 {tracker.update(&map,[4.,2.,1.],1./60.);}
+        assert!((tracker.height().unwrap()-2.0).abs()<0.01);
+        tracker.update(&map,[100.,15.,100.],1./60.);
+        assert_eq!(tracker.height(),Some(15.));
+        tracker.reset();assert_eq!(tracker.height(),None);
+    }
+    #[test]
+    fn ramp_markers_group_slopes_and_skip_flat_rooms() {
+        let a=Triangle {points:[[0.,0.,0.],[4.,4.,0.],[0.,0.,2.]],section:0};
+        let b=Triangle {points:[[0.,0.,2.],[4.,4.,0.],[4.,4.,2.]],section:0};
+        let ramps=find_ramps(&[a,b,triangle(0.)]);
+        assert_eq!(ramps.len(),1);
+        assert_eq!(ramps[0].bottom[1],0.);
+        assert_eq!(ramps[0].top[1],4.);
     }
     #[test]
     fn stairs_are_cut_at_height_boundaries() {

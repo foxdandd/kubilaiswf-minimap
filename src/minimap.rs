@@ -6,7 +6,7 @@ use hudhook::imgui::{Context, DrawListMut, FontSource, ImColor32, TextureId, Ui}
 use hudhook::{ImguiRenderLoop, RenderContext};
 
 use crate::config::Config;
-use crate::dungeon::{self, DungeonMap};
+use crate::dungeon::{self, DungeonMap, FloorTracker, View};
 use crate::game::{self, PointKind, Snapshot};
 use crate::maptiles::{self, Loader, MapId, TILE, WINDOW};
 
@@ -36,42 +36,158 @@ const PALE_GOLD: [u8; 3] = [214, 196, 150];
 const BRIGHT_GOLD: [u8; 3] = [255, 222, 150];
 const BACKGROUND: [u8; 3] = [24, 20, 15];
 const BLACK: [u8; 3] = [0, 0, 0];
+const LEVEL_FILL: [u8;3] = [173,155,117];
+const LEVEL_EDGE: [u8;3] = [233,209,158];
+const UPPER_FILL: [u8;3] = [36,48,53];
+const UPPER_EDGE: [u8;3] = [108,156,173];
+const LOWER_FILL: [u8;3] = [39,32,24];
+const LOWER_EDGE: [u8;3] = [131,108,76];
+
+/// Filled neighbouring triangles must share opaque edges. Keep AA on for real outlines.
+struct SolidMeshFill { raw: *mut hudhook::imgui::sys::ImDrawList, flags:i32 }
+impl SolidMeshFill {
+    fn foreground() -> Self {
+        // SAFETY: used only while this render thread owns an active foreground draw list.
+        unsafe {
+            let raw=hudhook::imgui::sys::igGetForegroundDrawList();
+            let flags=(*raw).Flags;
+            (*raw).Flags &= !(hudhook::imgui::sys::ImDrawListFlags_AntiAliasedFill as i32);
+            Self {raw,flags}
+        }
+    }
+}
+impl Drop for SolidMeshFill {
+    fn drop(&mut self) {
+        // SAFETY: the guard is scoped inside the same active frame and draw-list borrow.
+        unsafe {(*self.raw).Flags=self.flags;}
+    }
+}
 
 #[cfg(test)]
 mod dungeon_render_tests {
     use super::*;
+    static IMGUI_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn sample(data: &hudhook::imgui::DrawData, point: [f32;2]) -> [f32;3] {
+        let mut color = [24.0,20.0,15.0];
+        for list in data.draw_lists() {
+            for indices in list.idx_buffer().chunks_exact(3) {
+                let v: [_;3] = std::array::from_fn(|i| list.vtx_buffer()[indices[i] as usize]);
+                let [a,b,c] = v.map(|v| v.pos);
+                let d=(b[1]-c[1])*(a[0]-c[0])+(c[0]-b[0])*(a[1]-c[1]);
+                if d.abs()<1e-6 {continue;}
+                let u=((b[1]-c[1])*(point[0]-c[0])+(c[0]-b[0])*(point[1]-c[1]))/d;
+                let w=((c[1]-a[1])*(point[0]-c[0])+(a[0]-c[0])*(point[1]-c[1]))/d;
+                let weights=[u,w,1.0-u-w];
+                if weights.iter().any(|x| *x < -1e-5) {continue;}
+                let alpha=(0..3).map(|i| weights[i]*v[i].col[3] as f32/255.0).sum::<f32>();
+                for channel in 0..3 {
+                    let source=(0..3).map(|i| weights[i]*v[i].col[channel] as f32).sum::<f32>();
+                    color[channel]=source*alpha+color[channel]*(1.0-alpha);
+                }
+            }
+        }
+        color
+    }
+
+    fn test_config() -> Config {
+        Config { trail:false, rotate:true, compass:true, hide_in_boss_fights:false,
+            hide_in_caves:true, dungeon_mode:true, dungeon_height_band:2.0,
+            dungeon_floor_key:None, size:1.0, margin:24.0, toggle_key:None, zoom_key:None }
+    }
+
+    fn player_at(local_position: [f32;3]) -> Snapshot {
+        Snapshot { block_id:dungeon::PILOT_BLOCK, local_position,
+            position:[local_position[0],local_position[2]], space:30, map:None,
+            facing:[0.,1.], camera_right:[1.,0.], camera_forward:[0.,1.], fade:0.,
+            hud_visible:true, boss_fight:false, in_cave:true, graces:vec![], beacons:vec![], points:vec![] }
+    }
+
+    fn dump_scene(path:&Path,data:&hudhook::imgui::DrawData) {
+        use std::io::Write;
+        let mut file=std::io::BufWriter::new(std::fs::File::create(path).unwrap());
+        write!(file,"{{\"lists\":[").unwrap();
+        for (list_index,list) in data.draw_lists().enumerate() {
+            if list_index>0 {write!(file,",").unwrap();}
+            write!(file,"{{\"vertices\":[").unwrap();
+            for (i,v) in list.vtx_buffer().iter().enumerate() {
+                if i>0 {write!(file,",").unwrap();}
+                write!(file,"[{},{},{},{},{},{},{},{}]",v.pos[0],v.pos[1],v.uv[0],v.uv[1],v.col[0],v.col[1],v.col[2],v.col[3]).unwrap();
+            }
+            write!(file,"],\"indices\":{:?}}}",list.idx_buffer()).unwrap();
+        }
+        write!(file,"]}}").unwrap();
+    }
+
+    #[test]
+    fn adjoining_floor_triangles_have_no_dark_diagonal_seam() {
+        let _lock=IMGUI_TEST_LOCK.lock().unwrap();
+        let map=DungeonMap { block:dungeon::PILOT_BLOCK, triangles:vec![
+            dungeon::Triangle {points:[[0.,0.,0.],[10.,0.,0.],[10.,0.,10.]],section:0},
+            dungeon::Triangle {points:[[0.,0.,0.],[10.,0.,10.],[0.,0.,10.]],section:0}],boundaries:vec![],ramps:vec![] };
+        let mut minimap=Minimap::new(Path::new("missing-test-game-directory"),test_config(),Some(map));
+        minimap.alpha=1.0;
+        let mut context=Context::create();
+        context.set_ini_filename(None);
+        context.io_mut().display_size=[800.,600.];
+        context.io_mut().delta_time=1./60.;
+        context.fonts().build_rgba32_texture();
+        {
+            let ui=context.frame();
+            let draw=ui.get_foreground_draw_list();
+            let flags=unsafe {(*hudhook::imgui::sys::igGetForegroundDrawList()).Flags};
+            minimap.draw_dungeon(ui,&draw,&player_at([5.,0.,5.]),[400.,300.],96.,1.);
+            assert_eq!(unsafe {(*hudhook::imgui::sys::igGetForegroundDrawList()).Flags},flags);
+        }
+        let data=context.render();
+        let seam=sample(data,[400.02,299.97]);
+        let interior=sample(data,[405.0,300.0]);
+        assert!((0..3).all(|i| (seam[i]-interior[i]).abs()<2.0),"seam={seam:?}, interior={interior:?}");
+    }
 
     #[test]
     #[ignore = "Requires TOMBSWARD_NAV_TEST_FILE generated from the local game"]
     fn real_dungeon_generates_finite_imgui_draw_data_inside_frame() {
+        let _lock=IMGUI_TEST_LOCK.lock().unwrap();
         let path = std::env::var_os("TOMBSWARD_NAV_TEST_FILE").expect("Set local fixture path");
         let map = DungeonMap::load(Path::new(&path)).unwrap();
-        let local_position = std::array::from_fn(|axis| map.triangles[0].points.iter().map(|p| p[axis]).sum::<f32>()/3.0);
+        let mut poses=Vec::new();
+        for (name,model,target_y) in [("Entrance",100,56.5),("Stairs",200,49.0),("Lower",400,46.4)] {
+            let center=map.triangles.iter().filter(|t|t.section==model).map(|t| {
+                std::array::from_fn::<_,3,_>(|axis|t.points.iter().map(|p|p[axis]).sum::<f32>()/3.0)
+            }).min_by(|a,b|(a[1]-target_y).abs().total_cmp(&(b[1]-target_y).abs())).unwrap();
+            poses.push((name,center));
+        }
         let config = Config { trail: false, rotate: true, compass: true,
             hide_in_boss_fights: false, hide_in_caves: true, dungeon_mode: true,
             dungeon_height_band: 2.0, dungeon_floor_key: None, size: 1.0,
             margin: 24.0, toggle_key: None, zoom_key: None };
         let mut minimap = Minimap::new(Path::new("missing-test-game-directory"), config, Some(map));
         minimap.alpha = 1.0;
-        let player = Snapshot { block_id: dungeon::PILOT_BLOCK, local_position,
-            position: [local_position[0],local_position[2]], space: 30, map: None,
-            facing: [0.,1.], camera_right: [1.,0.], camera_forward: [0.,1.],
-            fade: 0., hud_visible: true, boss_fight: false, in_cave: true,
-            graces: vec![], beacons: vec![], points: vec![] };
-        assert!(minimap.dungeon_active(&player));
         let mut context = Context::create();
         context.set_ini_filename(None);
         context.io_mut().display_size = [800.,600.];
         context.io_mut().delta_time = 1./60.;
-        context.fonts().build_rgba32_texture();
-        for all in [false,true] {
-            minimap.dungeon_all_floors = all;
+        let atlas=context.fonts().build_rgba32_texture();
+        if let Some(dir)=std::env::var_os("MINIMAP_PREVIEW_DIR") {
+            let dir=Path::new(&dir);std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("atlas.rgba"),atlas.data).unwrap();
+            std::fs::write(dir.join("atlas.json"),format!("{{\"width\":{},\"height\":{}}}",atlas.width,atlas.height)).unwrap();
+        }
+        for (name,position) in poses {
+        let player=player_at(position);
+        assert!(minimap.dungeon_active(&player));
+        for view in [View::Layered,View::Current,View::All] {
+            minimap.dungeon_view = view;
             {
                 let ui = context.frame();
                 let draw = ui.get_foreground_draw_list();
-                minimap.draw_dungeon(&draw,&player,[400.,300.],96.,1.);
+                minimap.draw_dungeon(ui,&draw,&player,[400.,300.],96.,1.);
             }
             let data = context.render();
+            if let Some(dir)=std::env::var_os("MINIMAP_PREVIEW_DIR") {
+                dump_scene(&Path::new(&dir).join(format!("{name}-{view:?}.json")),data);
+            }
             assert!(data.total_vtx_count > 0 && data.total_idx_count > 0);
             for list in data.draw_lists() {
                 for v in list.vtx_buffer() {
@@ -81,12 +197,14 @@ mod dungeon_render_tests {
                 }
             }
         }
+        }
     }
 }
 
 pub struct Minimap {
     dungeon: Option<DungeonMap>,
-    dungeon_all_floors: bool,
+    dungeon_view: View,
+    dungeon_floor: FloorTracker,
     config: Config,
     loader: Loader,
     frame: Option<TextureId>,
@@ -113,7 +231,8 @@ impl Minimap {
     pub fn new(game_dir: &Path, config: Config, dungeon: Option<DungeonMap>) -> Self {
         Self {
             dungeon,
-            dungeon_all_floors: false,
+            dungeon_view: View::Layered,
+            dungeon_floor: FloorTracker::default(),
             config,
             loader: Loader::spawn(game_dir),
             frame: None,
@@ -202,12 +321,15 @@ impl ImguiRenderLoop for Minimap {
             self.zoom = (self.zoom + 1) % ZOOM_RANGES.len();
         }
         if pressed(self.config.dungeon_floor_key) {
-            self.dungeon_all_floors = !self.dungeon_all_floors;
+            self.dungeon_view = self.dungeon_view.next();
         }
 
         let snapshot = game::LATEST.lock().unwrap().clone();
         if let Some(snapshot) = &snapshot {
             self.update(snapshot);
+            if self.dungeon_active(snapshot) {
+                self.dungeon_floor.update(self.dungeon.as_ref().unwrap(),snapshot.local_position,ui.io().delta_time);
+            } else {self.dungeon_floor.reset();}
         }
         // Characters turn instantly, so the arrow eases toward the facing in world space,
         // which keeps it from lagging behind camera turns.
@@ -351,7 +473,7 @@ impl Minimap {
                 .build();
         }
         if dungeon_active {
-            self.draw_dungeon(&draw_list, player, center, radius, s);
+            self.draw_dungeon(ui,&draw_list, player, center, radius, s);
         }
         // Darken toward the rim so the frame sits on the map instead of cutting it.
         for i in 0..4 {
@@ -400,9 +522,16 @@ impl Minimap {
 
         self.draw_arrow(&draw_list, center, s);
         if dungeon_active {
-            let label = if self.dungeon_all_floors { "Tombsward | all floors" } else { "Tombsward | nearby floor" };
-            self.draw_text_centered(ui, &draw_list, [center[0], center[1] + radius + 30.0*s],
-                self.color(PALE_GOLD, 1.0), label);
+            let y=center[1]+frame_size*0.5+8.0*s;
+            let title=if self.dungeon_view==View::All {"Tombsward - all levels"} else {"Tombsward"};
+            self.draw_text_centered(ui,&draw_list,[center[0],y],self.color(PALE_GOLD,1.0),title);
+            if self.dungeon_view==View::Current {
+                self.draw_text_centered(ui,&draw_list,[center[0],y+15.0*s],self.color(LEVEL_EDGE,0.9),"Current level");
+            } else {
+                for (x,text,color) in [(-45.0,"UP",UPPER_EDGE),(0.0,"HERE",LEVEL_EDGE),(45.0,"DOWN",LOWER_EDGE)] {
+                    self.draw_text_centered(ui,&draw_list,[center[0]+x*s,y+15.0*s],self.color(color,1.0),text);
+                }
+            }
         }
 
         if let Some(frame) = self.frame {
@@ -418,24 +547,34 @@ impl Minimap {
         }
     }
 
-    fn draw_dungeon(&self, draw: &DrawListMut, player: &Snapshot, center: [f32; 2], radius: f32, s: f32) {
+    fn draw_dungeon(&self, ui:&Ui, draw: &DrawListMut, player: &Snapshot, center: [f32; 2], radius: f32, s: f32) {
         let Some(map) = &self.dungeon else { return; };
         let range = dungeon::ZOOM[self.zoom];
         let scale = radius / range;
-        let floor = map.floor_height(player.local_position);
+        let floor = self.dungeon_floor.height().unwrap_or_else(||map.floor_height(player.local_position));
         let low = floor - self.config.dungeon_height_band;
         let high = floor + self.config.dungeon_height_band;
         let project = |p: [f32; 3]| {
             self.to_screen([p[0] - player.local_position[0], p[2] - player.local_position[2]]).map(|v| v * scale)
         };
+        let extent=if self.dungeon_view==View::All {1_000_000.0} else {8.0};
+        let mut layers=Vec::new();
+        if self.dungeon_view!=View::Current {
+            layers.push((floor-extent,low,LOWER_FILL,LOWER_EDGE,0.75));
+            layers.push((high,floor+extent,UPPER_FILL,UPPER_EDGE,0.85));
+        }
+        layers.push((low,high,LEVEL_FILL,LEVEL_EDGE,1.45));
+        // Complete each background level before drawing the bright current level on top.
+        for (bottom,top,fill,edge,width) in layers {
+        {
+        let _opaque_mesh_edges=SolidMeshFill::foreground();
         for triangle in &map.triangles {
             if (0..2).any(|axis| {
                 let a = if axis == 0 { 0 } else { 2 };
                 triangle.points.iter().all(|p| p[a] < player.local_position[a]-range) ||
                 triangle.points.iter().all(|p| p[a] > player.local_position[a]+range)
             }) { continue; }
-            let polygon = if self.dungeon_all_floors { triangle.points.to_vec() }
-                else { dungeon::clip_height(&triangle.points, low, high) };
+            let polygon=dungeon::clip_height(&triangle.points,bottom,top);
             if polygon.len() < 3 { continue; }
             let screen: Vec<_> = polygon.into_iter().map(project).collect();
             let mut clipped = dungeon::clip_disc(&screen, radius - s);
@@ -446,16 +585,62 @@ impl Minimap {
             }).sum();
             if area < 0.0 { clipped.reverse(); }
             for point in &mut clipped { point[0] += center[0]; point[1] += center[1]; }
-            let tone = (triangle.section % 3) as u8 * 7;
-            draw.add_polyline(clipped, self.color([132+tone, 119+tone, 89+tone], 1.0)).filled(true).build();
+            draw.add_polyline(clipped, self.color(fill, 1.0)).filled(true).build();
+        }
         }
         for &boundary in &map.boundaries {
-            let line = if self.dungeon_all_floors { Some(boundary) }
-                else { dungeon::clip_segment_height(boundary, low, high) };
+            let line=dungeon::clip_segment_height(boundary,bottom,top);
             let Some(line) = line else { continue; };
             let Some(mut line) = dungeon::clip_segment_disc(line.map(project), radius-s) else { continue; };
             for p in &mut line { p[0]+=center[0]; p[1]+=center[1]; }
-            draw.add_line(line[0], line[1], self.color(PALE_GOLD, 0.9)).thickness(1.2*s).build();
+            draw.add_line(line[0], line[1], self.color(edge, 0.95)).thickness(width*s).build();
+        }
+        }
+        // Connected sloping patches give geometric up/down hints; they are not door markers.
+        let mut hints:Vec<[f32;2]>=Vec::new();
+        let mut label_boxes:Vec<([f32;2],[f32;2])>=Vec::new();
+        for ramp in &map.ramps {
+            // Only mark connections that reach the selected level, not unrelated remote stairs.
+            if ramp.bottom[1]>high || ramp.top[1]<low {continue;}
+            let rise=ramp.top[1]-ramp.bottom[1];
+            let t=((floor-ramp.bottom[1])/rise).clamp(0.05,0.95);
+            let point: [f32;3]=std::array::from_fn(|i|ramp.bottom[i]+(ramp.top[i]-ramp.bottom[i])*t);
+            let origin=project(point);
+            if origin[0].hypot(origin[1])>radius-28.0*s {continue;}
+            if hints.iter().any(|p|(p[0]-origin[0]).hypot(p[1]-origin[1])<22.0*s) {continue;}
+            let up=project(ramp.top);let down=project(ramp.bottom);
+            let Some(direction)=normalize([up[0]-down[0],up[1]-down[1]]) else {continue;};
+            let targets=[(ramp.top[1]-floor,1.0,UPPER_EDGE),(ramp.bottom[1]-floor,-1.0,LOWER_EDGE)];
+            let mut drawn=false;
+            for (delta,sign,color) in targets {
+                if delta*sign<self.config.dungeon_height_band+0.25 {continue;}
+                let d=direction.map(|x|x*sign);
+                let side=[-d[1],d[0]];
+                let mut anchor=[center[0]+origin[0]+d[0]*5.0*s,center[1]+origin[1]+d[1]*5.0*s];
+                if origin[0].hypot(origin[1])<12.0*s {for i in 0..2 {anchor[i]+=d[i]*10.0*s;}}
+                let label=format!("{delta:+.0}m");
+                let position=[anchor[0]+side[0]*8.0*s+d[0]*14.0*s,anchor[1]+side[1]*8.0*s+d[1]*14.0*s];
+                let size=ui.calc_text_size(&label);
+                let min=[position[0]-size[0]*0.5-2.0*s,position[1]-size[1]*0.5-2.0*s];
+                let max=[position[0]+size[0]*0.5+2.0*s,position[1]+size[1]*0.5+2.0*s];
+                if label_boxes.iter().any(|(a,b)|min[0]<b[0] && max[0]>a[0] && min[1]<b[1] && max[1]>a[1]) {continue;}
+                if [min,[min[0],max[1]],max,[max[0],min[1]]].iter()
+                    .any(|p|(p[0]-center[0]).hypot(p[1]-center[1])>radius-2.0*s) {continue;}
+                for step in [0.0,4.0] {
+                    let tip=[anchor[0]+d[0]*step*s,anchor[1]+d[1]*step*s];
+                    let left=[tip[0]-d[0]*3.5*s+side[0]*3.0*s,tip[1]-d[1]*3.5*s+side[1]*3.0*s];
+                    let right=[tip[0]-d[0]*3.5*s-side[0]*3.0*s,tip[1]-d[1]*3.5*s-side[1]*3.0*s];
+                    draw.add_line(left,tip,self.color(BLACK,0.9)).thickness(4.0*s).build();
+                    draw.add_line(tip,right,self.color(BLACK,0.9)).thickness(4.0*s).build();
+                    draw.add_line(left,tip,self.color(color,1.0)).thickness(2.0*s).build();
+                    draw.add_line(tip,right,self.color(color,1.0)).thickness(2.0*s).build();
+                }
+                self.draw_text_centered(ui,draw,[position[0]+s,position[1]+s],self.color(BLACK,0.9),&label);
+                self.draw_text_centered(ui,draw,position,self.color(color,1.0),&label);
+                label_boxes.push((min,max));
+                drawn=true;
+            }
+            if drawn {hints.push(origin);}
         }
     }
 
