@@ -33,8 +33,8 @@ impl Config {
             hide_in_caves: true,
             size: 1.0,
             margin: 24.0,
-            toggle_key: Some(Key::F9),
-            zoom_key: Some(Key::F10),
+            toggle_key: Some(Key::F7),
+            zoom_key: Some(Key::F8),
         };
         for line in text.lines().map(str::trim) {
             if line.starts_with([';', '#']) {

@@ -35,8 +35,8 @@ natives = [ { path = 'C:\some\other\mod.dll' }, { path = 'C:\path\to\kubilaiswf-
 
 ## Controls
 
-- F9 show / hide
-- F10 zoom (40 / 80 / 160 m)
+- F7 show / hide
+- F8 zoom (40 / 80 / 160 m)
 
 Both keys can be changed in `minimap.ini`.
 
@@ -52,8 +52,8 @@ hide_in_boss_fights = false  ; hide while a boss health bar is up
 hide_in_caves = true         ; hide in catacombs, caves and tunnels
 size = 1.0                   ; 0.5 to 2.5
 margin = 24                  ; distance from the top right corner, pixels at 1080p
-toggle_key = F9              ; F1-F12, A-Z, 0-9, PageUp, Keypad0... or none
-zoom_key = F10
+toggle_key = F7              ; F1-F12, A-Z, 0-9, PageUp, Keypad0... or none
+zoom_key = F8
 ```
 
 ## Known limitations
