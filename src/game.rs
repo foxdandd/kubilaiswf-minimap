@@ -143,15 +143,11 @@ fn locate(block: BlockId, local: [f32; 2]) -> ([f32; 2], i32, Option<MapId>) {
     // Roundtable Hold has a world map spot but isn't anywhere on the map itself.
     let roundtable_hold = (block.area(), block.block()) == (11, 10);
     let conversion = legacy_conversion(block, local).filter(|_| !roundtable_hold);
-    let Some(conversion) = conversion else {
+    let Some((position, dst_area)) = conversion else {
         return (local, i32::from(block), None);
     };
-    let position = [
-        local[0] + conversion.offset[0],
-        local[1] + conversion.offset[1],
-    ];
     // Underground areas share the overworld's coordinates but have their own map.
-    let (space, map) = match (conversion.dst_area, block.area()) {
+    let (space, map) = match (dst_area, block.area()) {
         (60, 12) => (12, Some(MapId::Underground)),
         (60, _) => (60, Some(MapId::Overworld)),
         (area, _) => (i32::from(area), None),
@@ -159,27 +155,51 @@ fn locate(block: BlockId, local: [f32; 2]) -> ([f32; 2], i32, Option<MapId>) {
     (position, space, map)
 }
 
-/// One row of WorldMapLegacyConvParam: a point in a dungeon and where the world map draws it.
+/// One row of WorldMapLegacyConvParam: a point in a dungeon and the same point either on the
+/// world map grid or in another dungeon.
 struct Conversion {
     src: (u8, u8, u8),
     src_pos: [f32; 2],
-    dst_area: u8,
-    /// Added to a dungeon position to get the overworld-aligned position.
-    offset: [f32; 2],
+    dst: (u8, u8, u8),
+    dst_pos: [f32; 2],
 }
+
+/// The overworld and the Shadow of the Erdtree world, the areas the world map is drawn for.
+const WORLD_AREAS: [u8; 2] = [60, 61];
 
 static CONVERSIONS: OnceLock<Vec<Conversion>> = OnceLock::new();
 
-/// Dungeons that are drawn on the world map can list several reference points, each valid
-/// around itself, so the one nearest the player is used.
-fn legacy_conversion(block: BlockId, local: [f32; 2]) -> Option<&'static Conversion> {
-    let src = (block.area(), block.block(), block.region());
-    conversions()?
-        .iter()
-        .filter(|c| c.src == src)
-        .min_by(|a, b| {
-            distance_squared(a.src_pos, local).total_cmp(&distance_squared(b.src_pos, local))
-        })
+/// Returns the world map aligned position and its area. Dungeons list several reference
+/// points, each valid around itself, so the one nearest the player is used. Rows that lead
+/// to another dungeon (Stormveil to the Divine Tower and the like) are only followed when no
+/// row leads to the world map, as for the Shunning-Grounds, which go through Leyndell.
+fn legacy_conversion(block: BlockId, local: [f32; 2]) -> Option<([f32; 2], u8)> {
+    let conversions = conversions()?;
+    let (mut src, mut at) = ((block.area(), block.block(), block.region()), local);
+    for _ in 0..4 {
+        let nearest = |to_world: bool| {
+            conversions
+                .iter()
+                .filter(|c| c.src == src && WORLD_AREAS.contains(&c.dst.0) == to_world)
+                .min_by(|a, b| {
+                    distance_squared(a.src_pos, at).total_cmp(&distance_squared(b.src_pos, at))
+                })
+        };
+        if let Some(c) = nearest(true) {
+            let position = [
+                at[0] - c.src_pos[0] + f32::from(c.dst.1) * 256.0 + c.dst_pos[0],
+                at[1] - c.src_pos[1] + f32::from(c.dst.2) * 256.0 + c.dst_pos[1],
+            ];
+            return Some((position, c.dst.0));
+        }
+        let c = nearest(false)?;
+        at = [
+            at[0] - c.src_pos[0] + c.dst_pos[0],
+            at[1] - c.src_pos[1] + c.dst_pos[1],
+        ];
+        src = c.dst;
+    }
+    None
 }
 
 fn conversions() -> Option<&'static [Conversion]> {
@@ -190,18 +210,11 @@ fn conversions() -> Option<&'static [Conversion]> {
     let params = unsafe { SoloParamRepository::instance() }.ok()?;
     let conversions: Vec<Conversion> = (0..)
         .map_while(|i| params.get_row_by_index::<WorldMapLegacyConvParam>(i))
-        .map(|row| {
-            let src_pos = [row.src_pos_x(), row.src_pos_z()];
-            let dst = [
-                f32::from(row.dst_grid_x_no()) * 256.0 + row.dst_pos_x(),
-                f32::from(row.dst_grid_z_no()) * 256.0 + row.dst_pos_z(),
-            ];
-            Conversion {
-                src: (row.src_area_no(), row.src_grid_x_no(), row.src_grid_z_no()),
-                src_pos,
-                dst_area: row.dst_area_no(),
-                offset: [dst[0] - src_pos[0], dst[1] - src_pos[1]],
-            }
+        .map(|row| Conversion {
+            src: (row.src_area_no(), row.src_grid_x_no(), row.src_grid_z_no()),
+            src_pos: [row.src_pos_x(), row.src_pos_z()],
+            dst: (row.dst_area_no(), row.dst_grid_x_no(), row.dst_grid_z_no()),
+            dst_pos: [row.dst_pos_x(), row.dst_pos_z()],
         })
         .collect();
     // The params load after the player can already exist; try again next frame.
