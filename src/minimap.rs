@@ -25,6 +25,10 @@ const DISC_SEGMENTS: usize = 72;
 const FRAME_PNG: &[u8] = include_bytes!("../assets/frame.png");
 const ARROW_PNG: &[u8] = include_bytes!("../assets/arrow.png");
 const BEACON_PNG: &[u8] = include_bytes!("../assets/marker.png");
+/// Map for Goblins' icons, 48px cells, 9 per row (see `game::MFG_ICON_COUNT`).
+const MFG_ICONS_PNG: &[u8] = include_bytes!("../assets/mfg_icons.png");
+const MFG_ICON_COLUMNS: u16 = 9;
+const MFG_ICON_ROWS: u16 = game::MFG_ICON_COUNT.div_ceil(MFG_ICON_COLUMNS);
 /// Map radius as a fraction of frame.png's width: just past the widest point of its hole
 /// (measured 0.387 to 0.406) so the map always reaches under the frame.
 const FRAME_HOLE: f32 = 0.408;
@@ -42,6 +46,7 @@ pub struct Minimap {
     frame: Option<TextureId>,
     arrow: Option<TextureId>,
     beacon: Option<TextureId>,
+    mfg_icons: Option<TextureId>,
     map_texture: Option<TextureId>,
     /// What `map_texture` currently shows.
     map_window: Option<(MapId, [i32; 2])>,
@@ -67,6 +72,7 @@ impl Minimap {
             frame: None,
             arrow: None,
             beacon: None,
+            mfg_icons: None,
             map_texture: None,
             map_window: None,
             requested_window: None,
@@ -101,6 +107,7 @@ impl ImguiRenderLoop for Minimap {
         self.frame = load_png(render_context, FRAME_PNG);
         self.arrow = load_png(render_context, ARROW_PNG);
         self.beacon = load_png(render_context, BEACON_PNG);
+        self.mfg_icons = load_png(render_context, MFG_ICONS_PNG);
     }
 
     fn before_render<'a>(
@@ -461,6 +468,27 @@ impl Minimap {
                 center[1] + d[1] * pixels_per_meter,
             ];
             let opacity = if point.cleared { 0.45 } else { 1.0 };
+            if let (Some(cell), Some(texture)) = (point.mfg_icon, self.mfg_icons) {
+                let (column, row) = (cell % MFG_ICON_COLUMNS, cell / MFG_ICON_COLUMNS);
+                let uv = |column: u16, row: u16| {
+                    [
+                        f32::from(column) / f32::from(MFG_ICON_COLUMNS),
+                        f32::from(row) / f32::from(MFG_ICON_ROWS),
+                    ]
+                };
+                let half = 7.0 * s;
+                draw_list
+                    .add_image(
+                        texture,
+                        [at[0] - half, at[1] - half],
+                        [at[0] + half, at[1] + half],
+                    )
+                    .uv_min(uv(column, row))
+                    .uv_max(uv(column + 1, row + 1))
+                    .col(self.color([255, 255, 255], opacity))
+                    .build();
+                continue;
+            }
             let outline = self.color(BLACK, 0.8 * opacity);
             let dot = |r: f32, rgb: [u8; 3]| {
                 draw_list

@@ -6,7 +6,7 @@ A minimap for Elden Ring that looks like it belongs in the game. Loaded with [me
 - fully revealed, works in the overworld, legacy dungeons and underground
 - rotates with the camera, the arrow follows where you face
 - discovered graces, numbered beacons (1-5) and world map points
-- [Map for Goblins](https://www.nexusmods.com/eldenring/mods/3091) markers show up too and disappear once looted
+- [Map for Goblins](https://www.nexusmods.com/eldenring/mods/3091) markers show up too and disappear once looted, and the [DLL edition](https://www.nexusmods.com/eldenring/mods/10062)'s markers use its own icons
 - optional trail of where you've been
 - hides in menus, the world map and loading screens
 
@@ -59,7 +59,7 @@ zoom_key = F10
 ## Known limitations
 
 - no Shadow of the Erdtree map yet, DLC areas get a plain compass
-- Map for Goblins icons are simple shapes, not the game's icons
+- markers of the original Map for Goblins are simple shapes, not the game's icons
 - offline only
 
 ## Building
@@ -76,6 +76,7 @@ me3 launch --profile minimap.me3
 - [fromsoftware-rs](https://github.com/vswarte/fromsoftware-rs) for the game structures
 - [hudhook](https://github.com/veeenu/hudhook) for the overlay
 - [soarqin/EROverlay](https://github.com/soarqin/EROverlay) for documenting the beacon and map point logic
+- [Map For Goblins - DLL](https://github.com/VirusAlex/ERR-MapForGoblins-DLL) by VirusAlex for its marker icons (MIT, see `package/THIRD-PARTY-NOTICES.txt`)
 - [SoulsFormats](https://github.com/soulsmods/SoulsFormatsNEXT), [UXM](https://github.com/Nordgaren/UXM-Selective-Unpack) and [Smithbox](https://github.com/vawser/Smithbox) for file format and map research
 
 ## License

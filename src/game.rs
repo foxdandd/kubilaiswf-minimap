@@ -5,6 +5,8 @@ use eldenring::cs::{
     CSMenuManImp, SoloParamRepository, WorldChrMan, WorldMapLegacyConvParam, WorldMapPointParam,
 };
 use fromsoftware_shared::FromStatic;
+use hudhook::windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use hudhook::windows::core::w;
 
 use crate::maptiles::{self, MapId};
 
@@ -53,7 +55,14 @@ pub struct MapPoint {
     pub position: [f32; 2],
     /// Defeated bosses and the like, which the game marks as done.
     pub cleared: bool,
+    /// Cell of `assets/mfg_icons.png` for markers added by Map for Goblins' DLL edition.
+    pub mfg_icon: Option<u16>,
 }
+
+/// Icons in `assets/mfg_icons.png`, made from Map for Goblins DLL 2.1.5. The DLL appends them
+/// to the world map's icon frames in its alphabetical category order and numbers its markers'
+/// icons after the game's own frames, so the lowest number it uses ("ammo") is the first cell.
+pub const MFG_ICON_COUNT: u16 = 70;
 
 /// A beacon placed on the world map, numbered like the game numbers it.
 #[derive(Clone, Copy)]
@@ -342,6 +351,9 @@ struct PointRow {
     /// Rows allowed without text skip the text condition.
     needs_text: bool,
     texts: [PointText; 8],
+    /// No map selected, which only Map for Goblins' DLL edition does.
+    unmasked: bool,
+    mfg_icon: Option<u16>,
 }
 
 #[derive(Clone, Copy)]
@@ -391,6 +403,7 @@ fn visible_points(map: MapId, position: [f32; 2], space: i32) -> Vec<MapPoint> {
                 kind: point_kind(icon)?,
                 position: row.position,
                 cleared: row.cleared_flag != u32::MAX && on(row.cleared_flag),
+                mfg_icon: row.mfg_icon,
             })
         })
         .collect()
@@ -418,13 +431,19 @@ fn points() -> Option<&'static [PointRow]> {
     conversions()?;
     // SAFETY: the param repository is only read here, on a game task.
     let params = unsafe { SoloParamRepository::instance() }.ok()?;
-    let points: Vec<PointRow> = (0..)
+    // SAFETY: only looks the module up by name.
+    let mfg_dll = unsafe { GetModuleHandleW(w!("MapForGoblins.dll")) }.is_ok();
+    let mut points: Vec<PointRow> = (0..)
         .map_while(|i| params.get_row_by_index::<WorldMapPointParam>(i))
         // Area labels name whole regions rather than places.
         .filter(|row| !row.is_area_icon())
         .map(|row| {
             let block = BlockId::from_parts(row.area_no(), row.grid_x_no(), row.grid_z_no(), 0);
-            let (position, space, _) = locate(block, [row.pos_x(), row.pos_z()]);
+            let (position, space, located) = locate(block, [row.pos_x(), row.pos_z()]);
+            // Map for Goblins' DLL edition clears the map selection of its rows and draws them
+            // itself, on the map their location belongs to.
+            let unmasked =
+                mfg_dll && !row.disp_mask00() && !row.disp_mask01() && !row.disp_mask02();
             // The second set of text flags is signed; non-positive means unused.
             let flag2 = |flag: i32| u32::try_from(flag).unwrap_or(0);
             let texts = [
@@ -502,16 +521,30 @@ fn points() -> Option<&'static [PointRow]> {
             PointRow {
                 position,
                 space,
-                on_overworld: row.disp_mask00(),
-                on_underground: row.disp_mask01(),
+                on_overworld: row.disp_mask00() || unmasked && located == Some(MapId::Overworld),
+                on_underground: row.disp_mask01()
+                    || unmasked && located == Some(MapId::Underground),
                 icon: row.icon_id(),
                 alt_icon: row.alt_icon_id(),
                 open_flag: row.event_flag_id(),
                 cleared_flag: row.cleared_event_flag_id(),
                 needs_text: !row.is_enable_no_text(),
                 texts,
+                unmasked,
+                mfg_icon: None,
             }
         })
         .collect();
+    let is_mfg = |row: &PointRow| row.unmasked && row.icon >= 100;
+    if let Some(first) = points
+        .iter()
+        .filter(|row| is_mfg(row))
+        .map(|row| row.icon)
+        .min()
+    {
+        for row in points.iter_mut().filter(|row| is_mfg(row)) {
+            row.mfg_icon = Some(row.icon - first).filter(|&cell| cell < MFG_ICON_COUNT);
+        }
+    }
     Some(POINTS.get_or_init(|| points))
 }
