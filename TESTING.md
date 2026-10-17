@@ -1,9 +1,32 @@
-# Dungeon and height-aware outdoor minimap pilot 6
+# Dungeon and height-aware outdoor minimap pilot 7
 
 Local test build based on kubilaiswf's MIT-licensed Minimap, upstream commit
 ff2b9e4ce7b71ddcb503acd202081953183173aa. Keep the original copyright and LICENSE.
 
 ## What to test
+
+Pilot 7 fixes outdoor area consistency. The selected connected 3D terrain sheet
+is drawn as one current layer, including its hillsides. It is no longer cut away
+each time the player's supporting height moves outside a narrow 6 m band.
+Other nearby sheets still use height context. Terrain connectivity is geometric;
+it is not a verified route graph or a claim that every surface can be traversed.
+Grouping is built on the background loader, with 5 cm vertex welding across tiles.
+
+Auto retains the local view across missing support and short overhead gaps.
+While already below a surface, nearby overhead within 12 m can retain the area;
+it cannot trigger entry. Returning to the surface requires 2 s of supported open
+ground. Large position/elevation jumps clear the latch. A failed neighbouring
+tile refresh keeps an existing covering window, and a successful refresh remaps
+the selected terrain using the last supported position. Explicit Surface mode
+still takes effect immediately through the existing floor key.
+
+The outdoor caption is now stable: "Below-surface terrain" or "Local terrain".
+The changing upper-surface gap and signed outdoor slope arrows are omitted because
+they suggested floor changes on ordinary hillsides. Fixed slope contours remain;
+indoor floor arrows and controls are unchanged. The data format and existing INI
+remain compatible. Updating an installed pilot only needs the new DLL.
+The private pilot 7 update folder contains the DLL, notes, license and checksums;
+it requires existing navigation data for a fresh installation.
 
 Pilot 6 repaints generated dungeon and below-surface outdoor layouts in a style
 inspired by the original map: aged parchment, fine sepia navigation edges and
@@ -196,6 +219,16 @@ The game can update the profile's save during startup. Loading a character and
 checking visible overlays still require a separate gameplay test.
 
 ## Build and data
+
+Pilot 7 passed all 34 tests with local fixtures, retaining the 60-dungeon/1,080-frame
+and 1,681-DLC-map-cell checks. Regression checks reproduce the old immediate surface flashes on missing
+support and sparse overhead. A drawing comparison reproduces the moving-height-band
+artifact and verifies both uphill/downhill positions keep their connected paths
+current. Other checks cover nearby overhead, genuine exits, jumps, retained failed
+refreshes, ignored stale results and terrain remapping across changed region indices.
+Real-data walking replays follow 864 supported samples across Albinauric Village,
+Ellac River and Rauh with periodic terrain rebinding and no region/mode flips in
+the covered portions. These are offline trajectories, not a captured gameplay walk.
 
 Pilot 6 passed all 28 tests with the same local data, including all 60 dungeons
 at 1,080 sampled frames, lower/upper outdoor layouts at three zooms, and 1,681

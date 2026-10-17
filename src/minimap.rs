@@ -134,6 +134,61 @@ mod dungeon_render_tests {
     }
 
     #[test]
+    fn walking_a_connected_hillside_keeps_the_same_paths_current() {
+        let _lock=IMGUI_TEST_LOCK.lock().unwrap();
+        let map=DungeonMap {block:[60,34,42,0],triangles:vec![
+            dungeon::Triangle {points:[[0.,240.,0.],[24.,264.,0.],[24.,264.,12.]],section:0},
+            dungeon::Triangle {points:[[0.,240.,0.],[24.,264.,12.],[0.,240.,12.]],section:0}],boundaries:vec![],ramps:vec![]};
+        let window=outdoor::Window::from_map(map);
+        let mut minimap=Minimap::new(Path::new("missing-test-game"),test_config(),None);
+        minimap.alpha=1.;minimap.paper=Some(TextureId::new(1));
+        let mut context=Context::create();context.set_ini_filename(None);
+        context.io_mut().display_size=[800.,600.];context.io_mut().delta_time=1./60.;
+        context.fonts().build_rgba32_texture();
+        for position in [[2.,242.,6.],[20.,260.,6.]] {
+            let region=window.support_region(position,None).unwrap();
+            for connected in [false,true] {
+                {
+                    let ui=context.frame();let draw=ui.get_foreground_draw_list();
+                    minimap.draw_geometry(ui,&draw,&window.map,position,position[1],40.,outdoor::HEIGHT_BAND,
+                        View::Layered,outdoor::CONTEXT_EXTENT,[400.,300.],96.,1.,connected.then_some((&window,region)));
+                }
+                let data=context.render();let mut warm=0;
+                for world in [[5.,6.],[19.,6.]] {
+                    let screen=minimap.to_screen([world[0]-position[0],world[1]-position[2]]).map(|v|v*96./40.);
+                    let actual=sample(data,[400.+screen[0],300.+screen[1]]);
+                    let material=paper_sample(world.map(|v|v/PAPER_PERIOD));
+                    let expected:[f32;3]=std::array::from_fn(|i|material[i]*[246.,236.,208.][i]);
+                    if (0..3).all(|i|(actual[i]-expected[i]).abs()<2.) {warm+=1;}
+                }
+                // Negative control reproduces the old moving-height-band artifact.
+                assert_eq!(warm,if connected {2}else{1},"position={position:?}, connected={connected}");
+            }
+        }
+    }
+
+    #[test]
+    fn failed_or_stale_tile_refresh_retains_a_working_local_window() {
+        let center=[60,34,42,0];let wanted=[60,35,42,0];
+        let offset=[35.*256.,42.*256.];
+        let triangles=[240.,410.].map(|y|dungeon::Triangle {
+            points:[[-10.,y,-10.],[10.,y,-10.],[0.,y,10.]].map(|p|[p[0]+offset[0],p[1],p[2]+offset[1]]),section:0});
+        let map=DungeonMap {block:center,triangles:triangles.into(),boundaries:vec![],ramps:vec![]};
+        let window=outdoor::Window::from_map(map);
+        let mut minimap=Minimap::new(Path::new("missing-test-game"),test_config(),None);
+        let mut player=player_at([0.,240.,0.]);player.block_id=wanted;player.position=offset;
+        for _ in 0..5 {minimap.outdoor_coverage.update_window(&window,outdoor::position(&player),0.1);}
+        minimap.outdoor=Some(window);minimap.outdoor_key=Some(wanted);
+        assert!(minimap.outdoor_active(&player));
+        minimap.accept_outdoor(wanted,Err(std::io::Error::other("sparse neighbouring tile")));
+        assert!(minimap.outdoor_active(&player));assert_eq!(minimap.outdoor.as_ref().unwrap().key,center);
+        let stale=DungeonMap {block:[61,35,42,0],triangles:vec![
+            dungeon::Triangle {points:[[0.,0.,0.],[10.,0.,0.],[0.,0.,10.]],section:0}],boundaries:vec![],ramps:vec![]};
+        minimap.accept_outdoor(stale.block,Ok(outdoor::Window::from_map(stale)));
+        assert!(minimap.outdoor_active(&player));
+    }
+
+    #[test]
     fn paper_stays_fixed_in_world_space_across_movement_rotation_and_zoom() {
         let mut minimap=Minimap::new(Path::new("missing-test-game"),test_config(),None);
         let world=[8709.25,10777.75];let expected=world.map(|v|v/PAPER_PERIOD);
@@ -418,7 +473,8 @@ mod dungeon_render_tests {
                     {
                         let ui=context.frame();let draw=ui.get_foreground_draw_list();
                         minimap.draw_geometry(ui,&draw,&window.map,point,floor,ZOOM_RANGES[zoom],outdoor::HEIGHT_BAND,
-                            View::Layered,outdoor::CONTEXT_EXTENT,[400.,300.],96.,1.0);
+                            View::Layered,outdoor::CONTEXT_EXTENT,[400.,300.],96.,1.0,
+                            window.support_region(point,None).map(|region|(window,region)));
                     }
                     let data=context.render();elapsed+=start.elapsed();frames+=1;
                     assert!(data.total_vtx_count>0);
@@ -541,12 +597,22 @@ impl Minimap {
             if let Some(key)=wanted {loader.request(key);}
         }
         if let Some((key,result))=loader.poll() {
-            if Some(key)==self.outdoor_key {self.outdoor=result.ok();}
+            self.accept_outdoor(key,result);
         }
         if let Some(window)=&self.outdoor {
             let point=outdoor::position(player);
             self.outdoor_coverage.update_window(window,point,dt);
             self.outdoor_floor.update_height(self.outdoor_coverage.floor.unwrap_or(point[1]),point,dt);
+        }
+    }
+
+    fn accept_outdoor(&mut self,key:outdoor::Key,result:std::io::Result<outdoor::Window>) {
+        if Some(key)!=self.outdoor_key {return;}
+        // A sparse neighbouring tile may fail while the retained window still
+        // covers the player. Keep its working local geometry until a valid replacement.
+        if let Ok(window)=result {
+            self.outdoor_coverage.rebind(&window);
+            self.outdoor=Some(window);
         }
     }
 
@@ -825,7 +891,8 @@ impl Minimap {
             let point=outdoor::position(player);
             let floor=self.outdoor_floor.height().unwrap_or(point[1]);
             self.draw_geometry(ui,&draw_list,&window.map,point,floor,ZOOM_RANGES[self.zoom],
-                outdoor::HEIGHT_BAND,View::Layered,outdoor::CONTEXT_EXTENT,center,radius,s);
+                outdoor::HEIGHT_BAND,View::Layered,outdoor::CONTEXT_EXTENT,center,radius,s,
+                self.outdoor_coverage.region.map(|region|(window,region)));
         }
         // Darken toward the rim so the frame sits on the map instead of cutting it.
         for i in 0..4 {
@@ -894,7 +961,7 @@ impl Minimap {
             let y=center[1]+frame_size*0.5+8.0*s;
             let mode=match self.outdoor_mode {outdoor::Mode::Auto=>"Auto",outdoor::Mode::Local=>"Local",outdoor::Mode::Surface=>"Surface"};
             let title=if outdoor_active {
-                if let Some(gap)=self.outdoor_coverage.above {format!("Lower path | upper +{gap:.0}m")} else {"Local ground layout".to_owned()}
+                if self.outdoor_coverage.active(outdoor::Mode::Auto) {"Below-surface terrain".to_owned()} else {"Local terrain".to_owned()}
             } else if self.outdoor_mode==outdoor::Mode::Local {"Local layout unavailable".to_owned()} else {"Surface map".to_owned()};
             self.draw_text_centered(ui,&draw_list,[center[0],y],self.color(PALE_GOLD,1.0),&title);
             let hint=self.config.dungeon_floor_key.map_or_else(||mode.to_owned(),|key|format!("{mode} | {key:?}: change view"));
@@ -925,12 +992,13 @@ impl Minimap {
         let range = dungeon::ZOOM[self.zoom];
         let floor = self.dungeon_floor.height().unwrap_or_else(||map.floor_height(player.local_position));
         self.draw_geometry(ui,draw,map,player.local_position,floor,range,self.config.dungeon_height_band,
-            self.dungeon_view,8.0,center,radius,s);
+            self.dungeon_view,8.0,center,radius,s,None);
     }
 
     #[allow(clippy::too_many_arguments)]
     fn draw_geometry(&self,ui:&Ui,draw:&DrawListMut,map:&DungeonMap,position:[f32;3],floor:f32,
-        range:f32,band:f32,view:View,context_extent:f32,center:[f32;2],radius:f32,s:f32) {
+        range:f32,band:f32,view:View,context_extent:f32,center:[f32;2],radius:f32,s:f32,
+        terrain:Option<(&outdoor::Window,usize)>) {
         let scale=radius/range;
         let painted=self.config.parchment_maps && self.paper.is_some();
         if painted {
@@ -959,14 +1027,16 @@ impl Minimap {
         let mut contours=Vec::new();
         {
         let _opaque_mesh_edges=SolidMeshFill::foreground();
-        for triangle in &map.triangles {
-            if triangle.points.iter().all(|p|p[1]<bottom) || triangle.points.iter().all(|p|p[1]>top) {continue;}
+        for (index,triangle) in map.triangles.iter().enumerate() {
+            let primary=terrain.is_some_and(|(window,region)|window.regions[index]==region);
+            if primary && !current {continue;}
+            if !primary && (triangle.points.iter().all(|p|p[1]<bottom) || triangle.points.iter().all(|p|p[1]>top)) {continue;}
             if (0..2).any(|axis| {
                 let a = if axis == 0 { 0 } else { 2 };
                 triangle.points.iter().all(|p| p[a] < position[a]-range) ||
                 triangle.points.iter().all(|p| p[a] > position[a]+range)
             }) { continue; }
-            let polygon=dungeon::clip_height(&triangle.points,bottom,top);
+            let polygon=if primary {triangle.points.to_vec()} else {dungeon::clip_height(&triangle.points,bottom,top)};
             if polygon.len() < 3 { continue; }
             let screen: Vec<_> = polygon.into_iter().map(project).collect();
             let mut clipped = dungeon::clip_disc(&screen, radius - s);
@@ -981,8 +1051,11 @@ impl Minimap {
                 if current {
                     // Fixed world-height contours: no per-triangle shading or moving bands.
                     // Restrict to this slab; contours come from actual sloping geometry.
-                    let mut height=(bottom/4.0).ceil()*4.0;
-                    while height<top {
+                    let contour_low=if primary {triangle.points.iter().map(|p|p[1]).fold(f32::INFINITY,f32::min)} else {bottom};
+                    let contour_high=if primary {triangle.points.iter().map(|p|p[1]).fold(f32::NEG_INFINITY,f32::max)} else {top};
+                    let mut height=(contour_low/4.0).ceil()*4.0;
+                    let limit=contour_high.min(height+128.);
+                    while height<limit {
                         if let Some(line)=height_contour(triangle.points,height) {
                             if let Some(line)=dungeon::clip_segment_disc(line.map(project),radius-s) {
                                 contours.push(line);
@@ -1001,10 +1074,12 @@ impl Minimap {
             for p in &mut line {p[0]+=center[0];p[1]+=center[1];}
             draw.add_line(line[0],line[1],self.color([104,80,47],0.28)).thickness(0.6*s).build();
         }
-        for &boundary in &map.boundaries {
+        for (index,&boundary) in map.boundaries.iter().enumerate() {
+            let primary=terrain.is_some_and(|(window,region)|window.boundary_regions[index]==Some(region));
+            if primary && !current {continue;}
             if [0,2].iter().any(|&axis|boundary.iter().all(|p|p[axis]<position[axis]-range)
                 || boundary.iter().all(|p|p[axis]>position[axis]+range)) {continue;}
-            let line=dungeon::clip_segment_height(boundary,bottom,top);
+            let line=if primary {Some(boundary)} else {dungeon::clip_segment_height(boundary,bottom,top)};
             let Some(line) = line else { continue; };
             let Some(mut line) = dungeon::clip_segment_disc(line.map(project), radius-s) else { continue; };
             for p in &mut line { p[0]+=center[0]; p[1]+=center[1]; }
@@ -1025,6 +1100,9 @@ impl Minimap {
             }
         }
         }
+        // Terrain slopes belong to this sheet. Outdoor contours carry that
+        // information; signed floor-transition arrows remain available indoors.
+        if terrain.is_some() {return;}
         // Connected sloping patches give geometric up/down hints; they are not door markers.
         let mut hints:Vec<[f32;2]>=Vec::new();
         let mut label_boxes:Vec<([f32;2],[f32;2])>=Vec::new();
