@@ -7,6 +7,7 @@ param(
     [string]$RustupHome = '',
     [string]$GccBin = '',
     [string]$WorldMapGameRoot = '',
+    [string[]]$OutdoorNavigationRoots = @(),
     [switch]$Offline,
     [switch]$SmallDungeons
 )
@@ -41,10 +42,16 @@ $dataOptions=@()
 if ($SmallDungeons) { $dataOptions+='--small-dungeons' }
 & $PythonExe (Join-Path $PSScriptRoot 'prepare_dungeon.py') $NavigationRoot $OutputRoot @dataOptions
 if ($LASTEXITCODE -ne 0) { throw 'Dungeon data preparation failed' }
+if ($OutdoorNavigationRoots.Count) {
+    & $PythonExe (Join-Path $PSScriptRoot 'prepare_outdoor.py') @OutdoorNavigationRoots --output $OutputRoot
+    if ($LASTEXITCODE -ne 0) { throw 'Outdoor data preparation failed' }
+    $env:OUTDOOR_NAV_TEST_DIR=Join-Path $OutputRoot 'outdoor'
+} else { Remove-Item Env:OUTDOOR_NAV_TEST_DIR -ErrorAction SilentlyContinue }
 $env:TOMBSWARD_NAV_TEST_FILE = Join-Path $OutputRoot 'tombsward.nav'
 if ($SmallDungeons) { $env:DUNGEON_NAV_TEST_DIR=Join-Path $OutputRoot 'dungeons' }
 else { Remove-Item Env:DUNGEON_NAV_TEST_DIR -ErrorAction SilentlyContinue }
 $testOptions=@('--include-ignored')
+if (-not $OutdoorNavigationRoots.Count) { $testOptions+=@('--skip','real_outdoor_tiles_decode_and_reveal_overlapping_walkable_levels','--skip','real_outdoor_lower_and_upper_layers_render_separately','--skip','real_outdoor_loader_keeps_worlds_and_event_variants_separate') }
 if ($WorldMapGameRoot) { $env:MINIMAP_WORLD_TEST_ROOT=[IO.Path]::GetFullPath($WorldMapGameRoot) }
 else { $testOptions+=@('--skip','real_dlc_atlas_selects_and_decodes_game_tiles') }
 if (-not $SmallDungeons) { $testOptions+=@('--skip','real_maps_decode_and_background_loader_switches_exact_blocks','--skip','all_small_dungeons_render_at_multiple_heights_views_and_zooms','--skip','dungeon_selection_clears_old_geometry_during_rapid_warps') }

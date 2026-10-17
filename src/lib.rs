@@ -6,6 +6,7 @@ mod formats;
 mod game;
 mod maptiles;
 mod minimap;
+mod outdoor;
 mod reader;
 
 use std::ffi::c_void;
@@ -64,6 +65,12 @@ fn init(module: usize) {
     let config = config::Config::load(&dll.with_file_name("minimap.ini"));
     let log=dll.with_file_name("minimap-test.log");
     let catalog=dll.with_file_name("dungeons");
+    let outdoor_loader=if config.outdoor_layers && dll.with_file_name("outdoor").join("maps.tsv").exists() {
+        match outdoor::Loader::spawn(&dll.with_file_name("outdoor"),&log) {
+            Ok(loader)=>Some(loader),
+            Err(error)=>{let _=std::fs::write(&log,format!("Outdoor catalog unavailable: {error}\n"));None}
+        }
+    } else {None};
     let dungeon_loader=if config.dungeon_mode && catalog.join("maps.tsv").exists() {
         match dungeon_loader::DungeonLoader::spawn(&catalog,&log) {
             Ok(loader)=>Some(loader),
@@ -81,7 +88,7 @@ fn init(module: usize) {
         }
     } else { None };
     let _ = Hudhook::builder()
-        .with::<ImguiDx12Hooks>(minimap::Minimap::new(&game_dir, config, dungeon).with_dungeon_loader(dungeon_loader))
+        .with::<ImguiDx12Hooks>(minimap::Minimap::new(&game_dir, config, dungeon).with_dungeon_loader(dungeon_loader).with_outdoor_loader(outdoor_loader))
         .build()
         .apply();
 }

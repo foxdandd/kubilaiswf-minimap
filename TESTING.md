@@ -1,17 +1,38 @@
-# Dungeon and Shadow of the Erdtree minimap pilot 4
+# Dungeon and height-aware outdoor minimap pilot 5
 
 Local test build based on kubilaiswf's MIT-licensed Minimap, upstream commit
 ff2b9e4ce7b71ddcb503acd202081953183173aa. Keep the original copyright and LICENSE.
 
 ## What to test
 
-This adds an optional navigation-layout view for 60 small dungeon map blocks:
+Pilot 5 adds local outdoor navigation layouts for 719 base-game/DLC tile variants
+(447 base-game, 272 DLC; 47 event variants are included). These counts describe tiles,
+not distinct named areas. Geometry is generated from the user's own game files.
+At overlapping walkable levels, Auto switches from the flat map image to a layout
+around the player's current height. The Albinauric village, Ellac River area and
+Rauh Base have real lower/upper overlap samples in the offline tests.
+
+Outdoors, the floor key cycles **Auto -> Local -> Surface**. Source defaults use
+F11; an existing installation may use another key. Local forces the height-aware
+view when supporting navigation exists; Surface restores the normal map artwork.
+Gold highlights surfaces within 6 m of the supporting height; nearby upper/lower
+context extends 40 m, with slope arrows and signed height differences. A caption
+shows the nearest upper walkable level's height gap, not measured ceiling clearance.
+Auto requires an upper walkable surface more than 12 m above and delays changes
+by 0.35 s to reduce flicker. Small overhangs or paths absent from AI navigation
+may need Local mode, or may have no usable layout.
+
+Background loading joins a 3x3 tile window. Spatial indexing bounds per-frame height
+queries; neighbouring windows overlap during walking. Warps between worlds or event
+variants clear incompatible geometry. Missing data falls back to the ordinary map.
+Original dungeon layouts and the world-map artwork remain available.
+
+The package also retains optional navigation layouts for 60 small dungeon map blocks:
 48 base-game catacombs, caves and tunnels (areas m30/m31/m32), plus 12 DLC
 catacomb, gaol, forge and cave blocks (m40/m41/m42/m43). The catalog includes
 one unnamed forge block, shown by its map ID. `dungeons/maps.tsv` lists the exact
 IDs and available names; the count is map blocks, not verified distinct dungeons.
-Detailed navigation layouts for large legacy dungeons, overworld areas and overhaul
-layouts are outside this build. Outdoor views use the game's world-map textures.
+Detailed large legacy-dungeon and overhaul layouts remain outside this build.
 
 Pilot 4 adds the Shadow of the Erdtree outdoor map (area m61, atlas M10), read
 directly from the installed game's map-tile archives. No extra outdoor map download
@@ -49,6 +70,8 @@ DLL still supports the older single `tombsward.nav` layout.
 
 To update an existing working pilot folder, exit the game, replace
 `tombsward-minimap-test.dll`, and copy the complete `dungeons` directory next to it.
+For the outdoor feature also copy the complete `outdoor` directory. Keep
+`outdoor_layers = true` (the default, including when absent from an older INI).
 Keep the existing `minimap.ini`, ME3 profile and save. The data format, INI keys and
 test save name are unchanged. Replacing the DLL alone retains Tombsward-only coverage.
 
@@ -76,6 +99,18 @@ Settings are read from `minimap.ini` next to the DLL at game startup.
 To disable the experimental mode set `dungeon_mode = false` and restart.
 
 ## Gameplay checks still required
+
+- Visit the Albinauric village below Moonlight Altar, Ellac River and Rauh Base.
+  Check Auto's lower layout, position, rotation, stairs and height transitions.
+  Try Local and Surface with the floor key; returning to Auto takes up to 0.35 s.
+- Walk across outdoor tile edges, jump, use lifts, then warp between base/DLC and
+  a dungeon. Check for stale geometry and excessive frame-time cost. Live gameplay
+  alignment and combined-overlay performance are not established by offline draws.
+- Outdoor local layouts omit world-map icons and the flat trail because those
+  currently lack height information. They return in Surface mode.
+- The scan included 897 tile variants: 155 were empty and 23 NVA placements could
+  not be decoded by the installed reader. Those tiles have no generated layout.
+  Unavailable AI paths, moving geometry and overhaul changes remain limitations.
 
 - In the DLC, check Gravesite Plain, Scadu Altus and a southern area. Compare the
   arrow, road direction, zoom and discovered graces with the game's map. Place a
@@ -137,6 +172,13 @@ The game can update the profile's save during startup. Loading a character and
 checking visible overlays still require a separate gameplay test.
 
 ## Build and data
+
+Pilot 5 passed 26 tests with local game data: all 719 outdoor files decoded;
+spatial height queries matched full-mesh queries; lower/upper samples rendered at
+three zooms; world/variant changes and manual modes were checked. The earlier
+60-dungeon/1080-frame and 1681-DLC-tile checks still pass. These are offline checks,
+not a loaded-character gameplay result. Use `-OutdoorNavigationRoots` with the
+build script to include the outdoor data and these real-data tests.
 
 Run `cargo build --release --locked` and `cargo test --release --lib --locked`.
 `tools/build-pilot.ps1 -NavigationRoot PATH` performs both and makes the package.

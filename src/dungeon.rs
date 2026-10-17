@@ -40,6 +40,9 @@ pub struct FloorTracker { height: Option<f32>, last: Option<Point> }
 impl FloorTracker {
     pub fn update(&mut self, map: &DungeonMap, player: Point, dt: f32) {
         let target=map.floor_height(player);
+        self.update_height(target,player,dt);
+    }
+    pub fn update_height(&mut self,target:f32,player:Point,dt:f32) {
         let reset=self.last.is_none_or(|last| (last[0]-player[0]).hypot(last[2]-player[2])>12.0)
             || self.height.is_none_or(|height| (target-height).abs()>3.0);
         self.height=Some(if reset {target} else {
@@ -68,11 +71,14 @@ impl DungeonMap {
     }
 
     pub fn decode(data: &[u8]) -> io::Result<Self> {
-        if data.len() < 20 || &data[..8] != b"ERDNG001" {
+        if data.len() < 20 || (&data[..8]!=b"ERDNG001" && &data[..8]!=b"ERWLD001") {
             return Err(invalid("invalid dungeon data header"));
         }
         let block: [u8; 4] = data[8..12].try_into().unwrap();
-        if !(10..60).contains(&block[0]) || block.iter().any(|&v|v>99) {
+        let valid=if &data[..8]==b"ERWLD001" {
+            matches!(block[0],60|61) && matches!(block[3],0|10)
+        } else {(10..60).contains(&block[0])};
+        if !valid || block.iter().any(|&v|v>99) {
             return Err(invalid("invalid non-overworld dungeon block"));
         }
         let n = u32::from_le_bytes(data[12..16].try_into().unwrap()) as usize;
@@ -212,8 +218,17 @@ pub fn clip_height(points: &[Point], low: f32, high: f32) -> Vec<Point> {
 
 /// Clip to an inscribed 32-sided disc; map polygons cannot spill beyond the frame.
 pub fn clip_disc(points: &[[f32; 2]], radius: f32) -> Vec<[f32; 2]> {
-    let mut result = points.to_vec();
     let limit = radius * (std::f32::consts::PI / 32.0).cos();
+    // Dense outdoor meshes mostly lie wholly inside or outside the disc. Avoid
+    // 32 allocating clipping passes for each of those tiny terrain triangles.
+    if points.iter().all(|p|p[0]*p[0]+p[1]*p[1]<=limit*limit) {return points.to_vec();}
+    let nearest:[f32;2]=std::array::from_fn(|axis| {
+        let low=points.iter().map(|p|p[axis]).fold(f32::INFINITY,f32::min);
+        let high=points.iter().map(|p|p[axis]).fold(f32::NEG_INFINITY,f32::max);
+        if low>0.0 {low} else if high<0.0 {high} else {0.0}
+    });
+    if nearest[0]*nearest[0]+nearest[1]*nearest[1]>radius*radius {return vec![];}
+    let mut result = points.to_vec();
     for side in 0..32 {
         let (sin, cos) = (std::f32::consts::TAU * (side as f32 + 0.5) / 32.0).sin_cos();
         let input = std::mem::take(&mut result);

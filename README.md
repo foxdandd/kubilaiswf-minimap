@@ -2,7 +2,9 @@
 
 An enhanced fork of [kubilaiswf's Minimap](https://github.com/kubilaiswf/kubilaiswf-minimap). It keeps the original rotating map overlay and Map for Goblins compatibility, and adds navigation layouts for **60 small-dungeon map areas**, floor height cues, and the **Shadow of the Erdtree outdoor map**.
 
-These additions are carried on `main`. The original project's releases do not include them.
+The dungeon and DLC map additions are carried on `main`. The below-surface outdoor
+pilot is developed on `codex/tombsward-pilot`. The original project's releases do
+not include these additions.
 
 ## What this fork adds
 
@@ -12,6 +14,7 @@ These additions are carried on `main`. The original project's releases do not in
 | Floor height display | Gold for the current level, dim blue for paths above, dim brown for paths below |
 | Slope hints | Direction arrows and signed height differences, such as `+5 m` or `-3 m` |
 | Shadow of the Erdtree | Outdoor terrain read from the installed game, with DLC graces, map points and numbered beacons |
+| Below-surface outdoor paths | Optional height-aware layouts for 719 base/DLC tile variants, generated locally |
 
 Dungeon maps load in the background. The display clears the old layout when you change areas, smooths floor selection on stairs, and reduces overlapping labels.
 
@@ -76,6 +79,24 @@ The package's separate `dungeon-test.me3` is an alternative for isolated testing
 
 ## Controls
 
+Pilot 5 can show lower outdoor paths hidden by the normal map artwork, including
+the Albinauric village and layered DLC terrain. With generated `outdoor/` data
+beside the DLL, **Auto** detects an upper walkable surface and selects the local
+ground layout. Outdoors, the floor key cycles **Auto / Local / Surface**; inside
+supported dungeons it retains the existing floor-view cycle. `outdoor_layers = false`
+disables this feature. Missing data keeps the normal map.
+
+Generate the outdoor files from existing navigation exports:
+
+```powershell
+python tools/prepare_outdoor.py 'C:\path\to\outdoor-exports' --output '.\dist\Dungeon-Minimap-Test'
+```
+
+Multiple export roots may be supplied, including event-variant exports. The build
+script also accepts `-OutdoorNavigationRoots`. These exports are separate from the
+small-dungeon exports; the earlier exporter limitation still applies. Game geometry
+stays local. See [TESTING.md](TESTING.md) for coverage, missing tiles and live checks.
+
 | Action | Default key |
 | --- | --- |
 | Show or hide the minimap | F9 |
@@ -122,6 +143,11 @@ dungeon_floor_key = F11
 Pilot 4 passed **21 automated tests** using local game data. This included decoding **1,681 DLC map tiles**, switching between DLC and base-game tile windows, and drawing **1,080 dungeon frames** across the 60 map areas, sampled heights, views and zoom levels.
 
 Gameplay verification is still incomplete. DLC alignment, marker placement, floor hints and performance with other overlays need in-game checks.
+
+Pilot 5's lower/upper outdoor layouts are checked with local navigation data.
+Gold highlights the current height, blue is above, and brown is below. These are
+AI walkable surfaces, not a new hand-drawn underground map. Local layouts omit
+world-map icons and trail until those have height data; Surface mode restores them.
 
 If the game closes or freezes at startup with QuestPath enabled, set `renderer = window` under `[overlay_render]` in `QuestPath.ini`, then restart. This uses QuestPath's supported separate-window renderer. The local combined profile passed a 60-second game-window response check with this setting and the unchanged pilot 4 minimap DLL. This is a configuration workaround, not a general fix for graphics-hook conflicts. See [the startup regression check](TESTING.md#questpath-startup-regression); character loading and overlay appearance still need gameplay testing.
 

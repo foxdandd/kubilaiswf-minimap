@@ -10,6 +10,7 @@ use crate::dungeon::{self, DungeonMap, FloorTracker, View};
 use crate::dungeon_loader::DungeonLoader;
 use crate::game::{self, PointKind, Snapshot};
 use crate::maptiles::{self, Loader, MapId, TILE, WINDOW};
+use crate::outdoor;
 
 /// Meters from the center to the rim at each zoom level.
 const ZOOM_RANGES: [f32; 3] = [40.0, 80.0, 160.0];
@@ -72,8 +73,10 @@ mod dungeon_render_tests {
     fn sample(data: &hudhook::imgui::DrawData, point: [f32;2]) -> [f32;3] {
         let mut color = [24.0,20.0,15.0];
         for list in data.draw_lists() {
-            for indices in list.idx_buffer().chunks_exact(3) {
-                let v: [_;3] = std::array::from_fn(|i| list.vtx_buffer()[indices[i] as usize]);
+            for command in list.commands() {
+            let hudhook::imgui::DrawCmd::Elements {count,cmd_params}=command else {continue;};
+            for indices in list.idx_buffer()[cmd_params.idx_offset..cmd_params.idx_offset+count].chunks_exact(3) {
+                let v: [_;3] = std::array::from_fn(|i| list.vtx_buffer()[indices[i] as usize+cmd_params.vtx_offset]);
                 let [a,b,c] = v.map(|v| v.pos);
                 let d=(b[1]-c[1])*(a[0]-c[0])+(c[0]-b[0])*(a[1]-c[1]);
                 if d.abs()<1e-6 {continue;}
@@ -87,13 +90,14 @@ mod dungeon_render_tests {
                     color[channel]=source*alpha+color[channel]*(1.0-alpha);
                 }
             }
+            }
         }
         color
     }
 
     fn test_config() -> Config {
         Config { trail:false, rotate:true, compass:true, hide_in_boss_fights:false,
-            hide_in_caves:true, dungeon_mode:true, dungeon_height_band:2.0,
+            hide_in_caves:true, dungeon_mode:true, outdoor_layers:true, dungeon_height_band:2.0,
             dungeon_floor_key:None, size:1.0, margin:24.0, toggle_key:None, zoom_key:None }
     }
 
@@ -102,6 +106,19 @@ mod dungeon_render_tests {
             position:[local_position[0],local_position[2]], space:30, map:None,
             facing:[0.,1.], camera_right:[1.,0.], camera_forward:[0.,1.], fade:0.,
             hud_visible:true, boss_fight:false, in_cave:true, graces:vec![], beacons:vec![], points:vec![] }
+    }
+
+    #[test]
+    fn outdoor_tiles_use_centered_cells_and_keep_event_variants() {
+        let mut player=player_at([0.,240.,0.]);player.block_id=[60,17,21,1];
+        player.position=[34.*256.-100.,42.*256.-100.];
+        assert_eq!(outdoor::key(&player),Some([60,34,42,0]));
+        player.position[0]=34.*256.+128.;assert_eq!(outdoor::key(&player),Some([60,35,42,0]));
+        player.block_id=[61,17,21,11];assert_eq!(outdoor::key(&player),Some([61,35,42,10]));
+        player.position[0]=f32::NAN;assert!(outdoor::key(&player).is_none());
+        player.position=[0.,0.];player.local_position[1]=f32::NAN;assert!(outdoor::key(&player).is_none());
+        player.local_position[1]=240.;
+        player.position=[0.,0.];player.block_id=[30,0,0,0];assert!(outdoor::key(&player).is_none());
     }
 
     fn dump_scene(path:&Path,data:&hudhook::imgui::DrawData) {
@@ -116,7 +133,14 @@ mod dungeon_render_tests {
                 if i>0 {write!(file,",").unwrap();}
                 write!(file,"[{},{},{},{},{},{},{},{}]",v.pos[0],v.pos[1],v.uv[0],v.uv[1],v.col[0],v.col[1],v.col[2],v.col[3]).unwrap();
             }
-            write!(file,"],\"indices\":{:?}}}",list.idx_buffer()).unwrap();
+            let mut indices=Vec::new();
+            for command in list.commands() {
+                if let hudhook::imgui::DrawCmd::Elements {count,cmd_params}=command {
+                    indices.extend(list.idx_buffer()[cmd_params.idx_offset..cmd_params.idx_offset+count].iter()
+                        .map(|&v|v as usize+cmd_params.vtx_offset));
+                }
+            }
+            write!(file,"],\"indices\":{indices:?}}}").unwrap();
         }
         write!(file,"]}}").unwrap();
     }
@@ -161,7 +185,7 @@ mod dungeon_render_tests {
             poses.push((name,center));
         }
         let config = Config { trail: false, rotate: true, compass: true,
-            hide_in_boss_fights: false, hide_in_caves: true, dungeon_mode: true,
+            hide_in_boss_fights: false, hide_in_caves: true, dungeon_mode: true, outdoor_layers:true,
             dungeon_height_band: 2.0, dungeon_floor_key: None, size: 1.0,
             margin: 24.0, toggle_key: None, zoom_key: None };
         let mut minimap = Minimap::new(Path::new("missing-test-game-directory"), config, Some(map));
@@ -283,6 +307,68 @@ mod dungeon_render_tests {
         wait(&mut minimap,[43,1,0,0]);
         assert_eq!(minimap.dungeon_name,"Dragon's Pit");
     }
+
+    #[test]
+    #[ignore="Requires OUTDOOR_NAV_TEST_DIR from the installed game"]
+    fn real_outdoor_lower_and_upper_layers_render_separately() {
+        use std::time::{Instant,Duration};
+        let _lock=IMGUI_TEST_LOCK.lock().unwrap();
+        let dir=std::env::var_os("OUTDOOR_NAV_TEST_DIR").expect("Set outdoor fixtures");let dir=Path::new(&dir);
+        let loader=outdoor::Loader::spawn(dir,&dir.join("render-test.log")).unwrap();
+        let mut minimap=Minimap::new(Path::new("missing-test-game"),test_config(),None).with_outdoor_loader(Some(loader));
+        minimap.alpha=1.0;
+        let mut context=Context::create();context.set_ini_filename(None);
+        context.io_mut().display_size=[800.,600.];context.io_mut().delta_time=1./60.;
+        // Match hudhook's DX12 backend, including >64k-vertex draw-list support.
+        context.io_mut().backend_flags.insert(hudhook::imgui::BackendFlags::RENDERER_HAS_VTX_OFFSET);
+        let atlas=context.fonts().build_rgba32_texture();
+        if let Some(path)=std::env::var_os("OUTDOOR_PREVIEW_DIR") {
+            let path=Path::new(&path);std::fs::create_dir_all(path).unwrap();
+            std::fs::write(path.join("atlas.rgba"),atlas.data).unwrap();
+            std::fs::write(path.join("atlas.json"),format!("{{\"width\":{},\"height\":{}}}",atlas.width,atlas.height)).unwrap();
+        }
+        let mut frames=0;let mut elapsed=Duration::ZERO;
+        for (id,name) in [("m60_34_42_00","Village"),("m61_47_43_00","Ellac"),("m61_45_46_00","Rauh")] {
+            let map=DungeonMap::load(&dir.join(format!("{id}.nav"))).unwrap();
+            let (lower,gap)=outdoor::lower_sample(&map).expect("lower outdoor path");
+            let mut player=player_at(lower);player.block_id=map.block;player.position=[lower[0],lower[2]];
+            player.space=map.block[0] as i32;player.in_cave=false;
+            player.local_position=[lower[0]-map.block[1] as f32*256.,lower[1],lower[2]-map.block[2] as f32*256.];
+            let deadline=Instant::now()+Duration::from_secs(15);
+            while minimap.outdoor.as_ref().is_none_or(|w|w.key!=outdoor::key(&player).unwrap()) {
+                minimap.select_outdoor(&player,0.1);assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(1));
+            }
+            for _ in 0..5 {minimap.select_outdoor(&player,0.1);}
+            minimap.outdoor_mode=outdoor::Mode::Auto;assert!(minimap.outdoor_active(&player));
+            minimap.outdoor_mode=outdoor::Mode::Surface;assert!(!minimap.outdoor_active(&player));
+            minimap.outdoor_mode=outdoor::Mode::Local;assert!(minimap.outdoor_active(&player));
+            for (level,point) in [("Lower",lower),("Upper",[lower[0],lower[1]+gap,lower[2]])] {
+                for zoom in 0..3 {
+                    let start=Instant::now();
+                    let window=minimap.outdoor.as_ref().unwrap();
+                    let floor=window.map.floor_height(point);
+                    {
+                        let ui=context.frame();let draw=ui.get_foreground_draw_list();
+                        minimap.draw_geometry(ui,&draw,&window.map,point,floor,ZOOM_RANGES[zoom],outdoor::HEIGHT_BAND,
+                            View::Layered,outdoor::CONTEXT_EXTENT,[400.,300.],96.,1.0);
+                    }
+                    let data=context.render();elapsed+=start.elapsed();frames+=1;
+                    assert!(data.total_vtx_count>0);
+                    let center=sample(data,[400.02,300.03]);assert!(center[0]>130. && center[0]>center[2],"{id} {level}: {center:?}");
+                    for list in data.draw_lists(){for v in list.vtx_buffer(){
+                        assert!(v.pos.iter().all(|v|v.is_finite()));assert!((v.pos[0]-400.).hypot(v.pos[1]-300.)<=98.0);
+                    }}
+                    if zoom==1 {if let Some(path)=std::env::var_os("OUTDOOR_PREVIEW_DIR") {
+                        dump_scene(&Path::new(&path).join(format!("{name}-{level}.json")),data);
+                    }}
+                }
+            }
+            println!("Outdoor {id}: lower={lower:?}, upper gap={gap:.1} m");
+        }
+        println!("Outdoor {frames} frames: {:.2} ms per frame (CPU geometry only)",elapsed.as_secs_f64()*1000./frames as f64);
+        let mut other=player_at([0.,0.,0.]);other.block_id=[30,0,0,0];minimap.select_outdoor(&other,0.1);
+        assert!(minimap.outdoor.is_none());assert!(!minimap.outdoor_active(&other));
+    }
 }
 
 pub struct Minimap {
@@ -292,6 +378,12 @@ pub struct Minimap {
     dungeon_name: String,
     dungeon_view: View,
     dungeon_floor: FloorTracker,
+    outdoor_loader:Option<outdoor::Loader>,
+    outdoor_key:Option<outdoor::Key>,
+    outdoor:Option<outdoor::Window>,
+    outdoor_mode:outdoor::Mode,
+    outdoor_floor:FloorTracker,
+    outdoor_coverage:outdoor::Coverage,
     config: Config,
     loader: Loader,
     frame: Option<TextureId>,
@@ -323,6 +415,12 @@ impl Minimap {
             dungeon_name:"Tombsward Catacombs".to_owned(),
             dungeon_view: View::Layered,
             dungeon_floor: FloorTracker::default(),
+            outdoor_loader:None,
+            outdoor_key:None,
+            outdoor:None,
+            outdoor_mode:outdoor::Mode::Auto,
+            outdoor_floor:FloorTracker::default(),
+            outdoor_coverage:outdoor::Coverage::default(),
             config,
             loader: Loader::spawn(game_dir),
             frame: None,
@@ -347,6 +445,36 @@ impl Minimap {
     pub fn with_dungeon_loader(mut self, loader:Option<DungeonLoader>) -> Self {
         self.dungeon_loader=loader;
         self
+    }
+
+    pub fn with_outdoor_loader(mut self,loader:Option<outdoor::Loader>)->Self {
+        self.outdoor_loader=loader;self
+    }
+
+    fn select_outdoor(&mut self,player:&Snapshot,dt:f32) {
+        let Some(loader)=&self.outdoor_loader else {return;};
+        let wanted=outdoor::key(player);
+        if wanted!=self.outdoor_key {
+            self.outdoor_key=wanted;
+            if !wanted.is_some_and(|key|self.outdoor.as_ref().is_some_and(|w|w.covers(key))) {
+                self.outdoor=None;self.outdoor_floor.reset();self.outdoor_coverage=outdoor::Coverage::default();
+            }
+            if let Some(key)=wanted {loader.request(key);}
+        }
+        if let Some((key,result))=loader.poll() {
+            if Some(key)==self.outdoor_key {self.outdoor=result.ok();}
+        }
+        if let Some(window)=&self.outdoor {
+            let point=outdoor::position(player);
+            self.outdoor_coverage.update_window(window,point,dt);
+            self.outdoor_floor.update_height(self.outdoor_coverage.floor.unwrap_or(point[1]),point,dt);
+        }
+    }
+
+    fn outdoor_active(&self,player:&Snapshot)->bool {
+        outdoor::position(player).iter().all(|v|v.is_finite())
+            && self.outdoor.as_ref().is_some_and(|w|outdoor::key(player).is_some_and(|key|w.covers(key)))
+            && self.outdoor_coverage.active(self.outdoor_mode)
     }
 
     fn select_dungeon(&mut self, block:[u8;4]) {
@@ -433,12 +561,15 @@ impl ImguiRenderLoop for Minimap {
             self.zoom = (self.zoom + 1) % ZOOM_RANGES.len();
         }
         if pressed(self.config.dungeon_floor_key) {
-            self.dungeon_view = self.dungeon_view.next();
+            if game::LATEST.lock().unwrap().as_ref().is_some_and(|p|outdoor::key(p).is_some()) {
+                self.outdoor_mode=self.outdoor_mode.next();
+            } else {self.dungeon_view = self.dungeon_view.next();}
         }
 
         let snapshot = game::LATEST.lock().unwrap().clone();
         if let Some(snapshot) = &snapshot {
             self.select_dungeon(snapshot.block_id);
+            self.select_outdoor(snapshot,ui.io().delta_time);
             self.update(snapshot);
             if self.dungeon_active(snapshot) {
                 self.dungeon_floor.update(self.dungeon.as_ref().unwrap(),snapshot.local_position,ui.io().delta_time);
@@ -578,7 +709,9 @@ impl Minimap {
             .num_segments(96)
             .build();
         let dungeon_active = self.dungeon_active(player);
-        if dungeon_active || !self.draw_map(&draw_list, player, center, radius) {
+        let outdoor_active = self.outdoor_active(player);
+        let layout_active=dungeon_active || outdoor_active;
+        if layout_active || !self.draw_map(&draw_list, player, center, radius) {
             draw_list
                 .add_circle(center, radius, self.color(BACKGROUND, 0.9))
                 .filled(true)
@@ -587,6 +720,12 @@ impl Minimap {
         }
         if dungeon_active {
             self.draw_dungeon(ui,&draw_list, player, center, radius, s);
+        } else if outdoor_active {
+            let window=self.outdoor.as_ref().unwrap();
+            let point=outdoor::position(player);
+            let floor=self.outdoor_floor.height().unwrap_or(point[1]);
+            self.draw_geometry(ui,&draw_list,&window.map,point,floor,ZOOM_RANGES[self.zoom],
+                outdoor::HEIGHT_BAND,View::Layered,outdoor::CONTEXT_EXTENT,center,radius,s);
         }
         // Darken toward the rim so the frame sits on the map instead of cutting it.
         for i in 0..4 {
@@ -601,10 +740,10 @@ impl Minimap {
                 .build();
         }
 
-        if self.config.trail && !dungeon_active {
+        if self.config.trail && !layout_active {
             self.draw_trail(&draw_list, player, center, radius, s);
         }
-        if !dungeon_active {
+        if !layout_active {
             self.draw_points(&draw_list, player, center, radius, s);
             self.draw_graces(&draw_list, player, center, radius, s);
             self.draw_beacons(ui, &draw_list, player, center, radius, s);
@@ -651,6 +790,23 @@ impl Minimap {
             }
         }
 
+        if outdoor::key(player).is_some() && self.outdoor_loader.is_some() {
+            let y=center[1]+frame_size*0.5+8.0*s;
+            let mode=match self.outdoor_mode {outdoor::Mode::Auto=>"Auto",outdoor::Mode::Local=>"Local",outdoor::Mode::Surface=>"Surface"};
+            let title=if outdoor_active {
+                if let Some(gap)=self.outdoor_coverage.above {format!("Lower path | upper +{gap:.0}m")} else {"Local ground layout".to_owned()}
+            } else if self.outdoor_mode==outdoor::Mode::Local {"Local layout unavailable".to_owned()} else {"Surface map".to_owned()};
+            self.draw_text_centered(ui,&draw_list,[center[0],y],self.color(PALE_GOLD,1.0),&title);
+            let hint=self.config.dungeon_floor_key.map_or_else(||mode.to_owned(),|key|format!("{mode} | {key:?}: change view"));
+            self.draw_text_centered(ui,&draw_list,[center[0],y+15.0*s],self.color(LEVEL_EDGE,0.9),&hint);
+            if outdoor_active {
+                let name=self.outdoor.as_ref().unwrap().name.split(';').next().unwrap_or_default();
+                let mut name=name.rsplit(" - ").next().unwrap_or(name).to_owned();
+                while !name.is_empty() && ui.calc_text_size(&name)[0]>frame_size {name.pop();}
+                self.draw_text_centered(ui,&draw_list,[center[0],y+30.0*s],self.color(PALE_GOLD,0.8),&name);
+            }
+        }
+
         if let Some(frame) = self.frame {
             let half = frame_size / 2.0;
             draw_list
@@ -667,16 +823,23 @@ impl Minimap {
     fn draw_dungeon(&self, ui:&Ui, draw: &DrawListMut, player: &Snapshot, center: [f32; 2], radius: f32, s: f32) {
         let Some(map) = &self.dungeon else { return; };
         let range = dungeon::ZOOM[self.zoom];
-        let scale = radius / range;
         let floor = self.dungeon_floor.height().unwrap_or_else(||map.floor_height(player.local_position));
-        let low = floor - self.config.dungeon_height_band;
-        let high = floor + self.config.dungeon_height_band;
+        self.draw_geometry(ui,draw,map,player.local_position,floor,range,self.config.dungeon_height_band,
+            self.dungeon_view,8.0,center,radius,s);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_geometry(&self,ui:&Ui,draw:&DrawListMut,map:&DungeonMap,position:[f32;3],floor:f32,
+        range:f32,band:f32,view:View,context_extent:f32,center:[f32;2],radius:f32,s:f32) {
+        let scale=radius/range;
+        let low = floor - band;
+        let high = floor + band;
         let project = |p: [f32; 3]| {
-            self.to_screen([p[0] - player.local_position[0], p[2] - player.local_position[2]]).map(|v| v * scale)
+            self.to_screen([p[0] - position[0], p[2] - position[2]]).map(|v| v * scale)
         };
-        let extent=if self.dungeon_view==View::All {1_000_000.0} else {8.0};
+        let extent=if view==View::All {1_000_000.0} else {context_extent};
         let mut layers=Vec::new();
-        if self.dungeon_view!=View::Current {
+        if view!=View::Current {
             layers.push((floor-extent,low,LOWER_FILL,LOWER_EDGE,0.75));
             layers.push((high,floor+extent,UPPER_FILL,UPPER_EDGE,0.85));
         }
@@ -686,10 +849,11 @@ impl Minimap {
         {
         let _opaque_mesh_edges=SolidMeshFill::foreground();
         for triangle in &map.triangles {
+            if triangle.points.iter().all(|p|p[1]<bottom) || triangle.points.iter().all(|p|p[1]>top) {continue;}
             if (0..2).any(|axis| {
                 let a = if axis == 0 { 0 } else { 2 };
-                triangle.points.iter().all(|p| p[a] < player.local_position[a]-range) ||
-                triangle.points.iter().all(|p| p[a] > player.local_position[a]+range)
+                triangle.points.iter().all(|p| p[a] < position[a]-range) ||
+                triangle.points.iter().all(|p| p[a] > position[a]+range)
             }) { continue; }
             let polygon=dungeon::clip_height(&triangle.points,bottom,top);
             if polygon.len() < 3 { continue; }
@@ -706,6 +870,8 @@ impl Minimap {
         }
         }
         for &boundary in &map.boundaries {
+            if [0,2].iter().any(|&axis|boundary.iter().all(|p|p[axis]<position[axis]-range)
+                || boundary.iter().all(|p|p[axis]>position[axis]+range)) {continue;}
             let line=dungeon::clip_segment_height(boundary,bottom,top);
             let Some(line) = line else { continue; };
             let Some(mut line) = dungeon::clip_segment_disc(line.map(project), radius-s) else { continue; };
@@ -730,7 +896,7 @@ impl Minimap {
             let targets=[(ramp.top[1]-floor,1.0,UPPER_EDGE),(ramp.bottom[1]-floor,-1.0,LOWER_EDGE)];
             let mut drawn=false;
             for (delta,sign,color) in targets {
-                if delta*sign<self.config.dungeon_height_band+0.25 {continue;}
+                if delta*sign<band+0.25 {continue;}
                 let d=direction.map(|x|x*sign);
                 let side=[-d[1],d[0]];
                 let mut anchor=[center[0]+origin[0]+d[0]*5.0*s,center[1]+origin[1]+d[1]*5.0*s];

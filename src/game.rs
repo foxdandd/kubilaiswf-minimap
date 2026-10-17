@@ -127,7 +127,9 @@ fn locate(block: BlockId, local: [f32; 2]) -> ([f32; 2], i32, Option<MapId>) {
         // Overworld blocks are mAA_XX_ZZ_LL grid tiles of (256 << LL) meters with positions
         // relative to the tile center. Larger tiles are centered on their 2x2 or 4x4 group of
         // small tiles, hence the extra half-tile offsets.
-        let tile = (256u32 << (block.index() & 0x3)) as f32;
+        // The tens digit selects an event variant (for example DLC unsealed tiles).
+        // Only the units digit describes grid scale.
+        let tile = (256u32 << (block.index() % 10).min(2)) as f32;
         let center = (tile - 256.0) / 2.0;
         let position = [
             local[0] + f32::from(block.block()) * tile + center,
@@ -170,11 +172,12 @@ mod map_location_tests {
     fn base_and_dlc_worlds_use_separate_maps_at_every_grid_level() {
         let world=[46.*256.+61.56,40.*256.+34.086];
         for (area,map) in [(60,MapId::Overworld),(61,MapId::ShadowRealm)] {
-            for level in 0..3 {
+            for index in [0,1,2,10,11,12] {
+                let level=index%10;
                 let tile=(256u32<<level) as f32;
                 let grid=[46>>level,40>>level];
                 let local=std::array::from_fn(|axis|world[axis]-grid[axis] as f32*tile-(tile-256.)*0.5);
-                let (position,space,selected)=locate(BlockId::from_parts(area,grid[0],grid[1],level),local);
+                let (position,space,selected)=locate(BlockId::from_parts(area,grid[0],grid[1],index),local);
                 assert_eq!(selected,Some(map));assert_eq!(space,area as i32);
                 assert!((0..2).all(|axis|(position[axis]-world[axis]).abs()<0.002));
             }
