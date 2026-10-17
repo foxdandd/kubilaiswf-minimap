@@ -105,7 +105,7 @@ Updating from before 0.4.0? The keys used to be F9 and F10, which clash with Map
 
 - No Shadow of the Erdtree map yet, DLC areas get a plain compass.
 - Markers of the original Map for Goblins are simple shapes, not the game's icons.
-- Only tested with me3.
+- Tested with me3 and Elden Mod Loader. For Elden Mod Loader, put `kubilaiswf-minimap.dll` straight into its `mods` folder.
 
 <details>
 <summary><b>How it works</b></summary>
