@@ -1,9 +1,32 @@
-# Dungeon and height-aware outdoor minimap pilot 5
+# Dungeon and height-aware outdoor minimap pilot 6
 
 Local test build based on kubilaiswf's MIT-licensed Minimap, upstream commit
 ff2b9e4ce7b71ddcb503acd202081953183173aa. Keep the original copyright and LICENSE.
 
 ## What to test
+
+Pilot 6 repaints generated dungeon and below-surface outdoor layouts in a style
+inspired by the original map: aged parchment, fine sepia navigation edges and
+subtle 4 m contours on actual slopes. Current ground uses warm paper; nearby
+upper/lower levels retain blue/brown cues and the signed slope arrows. The paper
+is anchored to world coordinates so walking, turning and zooming do not slide it
+across the paths. One embedded material is uploaded at startup and reused.
+No game-derived geographic artwork or new routes are baked into the texture.
+The original surface map is unchanged. The generated layouts still describe AI
+walkable surfaces, not hand-surveyed rooms or a complete painted terrain atlas.
+
+`parchment_maps = true` is the default even when missing from an older INI.
+Set it to false and restart to restore pilot 5's flat style. Texture-upload failure
+also falls back to that style. Updating an existing pilot 5 installation only
+requires the new DLL; its navigation files and controls stay compatible.
+The private pilot 6 update folder contains the DLL and these notes, not the data
+needed for a fresh installation. Keep the existing pilot 5 data beside the DLL.
+
+The original paper material was made with the built-in image-generation tool.
+Its reproducible prompt and provenance are in `assets/cartography-paper.prompt.txt`;
+the material is `assets/cartography-paper.png`. Actual geometry remains generated
+from the local game data. Offline previews use the renderer's real draw commands,
+including separate paper/font textures and wrapped paper sampling.
 
 Pilot 5 adds local outdoor navigation layouts for 719 base-game/DLC tile variants
 (447 base-game, 272 DLC; 47 event variants are included). These counts describe tiles,
@@ -73,7 +96,8 @@ To update an existing working pilot folder, exit the game, replace
 For the outdoor feature also copy the complete `outdoor` directory. Keep
 `outdoor_layers = true` (the default, including when absent from an older INI).
 Keep the existing `minimap.ini`, ME3 profile and save. The data format, INI keys and
-test save name are unchanged. Replacing the DLL alone retains Tombsward-only coverage.
+test save name are unchanged. A fresh install needs the generated data; updating
+an existing install retains whatever navigation coverage is already present.
 
 ## Start the isolated test
 
@@ -172,6 +196,15 @@ The game can update the profile's save during startup. Loading a character and
 checking visible overlays still require a separate gameplay test.
 
 ## Build and data
+
+Pilot 6 passed all 28 tests with the same local data, including all 60 dungeons
+at 1,080 sampled frames, lower/upper outdoor layouts at three zooms, and 1,681
+DLC map cells. New checks cover world-anchored material coordinates, joined slope
+contours, textured triangle seams and bounded texture draw-command batching.
+The dense outdoor sample uses softer ink so partition overlap does not black out
+small paths. The 18 outdoor frames averaged about 7.6 ms of CPU geometry work
+on the development host; this is not a live frame-rate measurement.
+Use `--painted` on the preview script for the mixed dungeon/below-surface sheet.
 
 Pilot 5 passed 26 tests with local game data: all 719 outdoor files decoded;
 spatial height queries matched full-mesh queries; lower/upper samples rendered at

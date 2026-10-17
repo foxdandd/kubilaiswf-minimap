@@ -27,6 +27,8 @@ const DISC_SEGMENTS: usize = 72;
 
 const FRAME_PNG: &[u8] = include_bytes!("../assets/frame.png");
 const ARROW_PNG: &[u8] = include_bytes!("../assets/arrow.png");
+const PAPER_PNG: &[u8] = include_bytes!("../assets/cartography-paper.png");
+const PAPER_PERIOD: f32 = 64.0;
 const BEACON_PNG: &[u8] = include_bytes!("../assets/marker.png");
 /// Map radius as a fraction of frame.png's width: just past the widest point of its hole
 /// (measured 0.387 to 0.406) so the map always reaches under the frame.
@@ -70,6 +72,27 @@ mod dungeon_render_tests {
     use super::*;
     static IMGUI_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    fn paper_sample(uv:[f32;2])->[f32;4] {
+        static PAPER:std::sync::OnceLock<(Vec<u8>,usize,usize)>=std::sync::OnceLock::new();
+        let (bytes,width,height)=PAPER.get_or_init(|| {
+            let mut decoder=png::Decoder::new(PAPER_PNG);
+            decoder.set_transformations(png::Transformations::EXPAND|png::Transformations::ALPHA);
+            let mut reader=decoder.read_info().unwrap();let mut bytes=vec![0;reader.output_buffer_size()];
+            let info=reader.next_frame(&mut bytes).unwrap();assert_eq!(info.color_type,png::ColorType::Rgba);
+            (bytes,info.width as usize,info.height as usize)
+        });
+        let x=uv[0]* *width as f32-0.5;let y=uv[1]* *height as f32-0.5;
+        let fx=x-x.floor();let fy=y-y.floor();
+        std::array::from_fn(|c| {
+            let pixel=|dx:i32,dy:i32| {
+                let ix=(x.floor() as i32+dx).rem_euclid(*width as i32) as usize;
+                let iy=(y.floor() as i32+dy).rem_euclid(*height as i32) as usize;
+                bytes[(iy*width+ix)*4+c] as f32/255.0
+            };
+            (pixel(0,0)*(1.-fx)+pixel(1,0)*fx)*(1.-fy)+(pixel(0,1)*(1.-fx)+pixel(1,1)*fx)*fy
+        })
+    }
+
     fn sample(data: &hudhook::imgui::DrawData, point: [f32;2]) -> [f32;3] {
         let mut color = [24.0,20.0,15.0];
         for list in data.draw_lists() {
@@ -84,10 +107,12 @@ mod dungeon_render_tests {
                 let w=((c[1]-a[1])*(point[0]-c[0])+(a[0]-c[0])*(point[1]-c[1]))/d;
                 let weights=[u,w,1.0-u-w];
                 if weights.iter().any(|x| *x < -1e-5) {continue;}
-                let alpha=(0..3).map(|i| weights[i]*v[i].col[3] as f32/255.0).sum::<f32>();
+                let uv=std::array::from_fn(|axis|(0..3).map(|i|weights[i]*v[i].uv[axis]).sum());
+                let texture=if cmd_params.texture_id.id()==1 {paper_sample(uv)} else {[1.;4]};
+                let alpha=(0..3).map(|i| weights[i]*v[i].col[3] as f32/255.0).sum::<f32>()*texture[3];
                 for channel in 0..3 {
                     let source=(0..3).map(|i| weights[i]*v[i].col[channel] as f32).sum::<f32>();
-                    color[channel]=source*alpha+color[channel]*(1.0-alpha);
+                    color[channel]=source*texture[channel]*alpha+color[channel]*(1.0-alpha);
                 }
             }
             }
@@ -97,7 +122,7 @@ mod dungeon_render_tests {
 
     fn test_config() -> Config {
         Config { trail:false, rotate:true, compass:true, hide_in_boss_fights:false,
-            hide_in_caves:true, dungeon_mode:true, outdoor_layers:true, dungeon_height_band:2.0,
+            hide_in_caves:true, dungeon_mode:true, outdoor_layers:true, parchment_maps:true, dungeon_height_band:2.0,
             dungeon_floor_key:None, size:1.0, margin:24.0, toggle_key:None, zoom_key:None }
     }
 
@@ -106,6 +131,35 @@ mod dungeon_render_tests {
             position:[local_position[0],local_position[2]], space:30, map:None,
             facing:[0.,1.], camera_right:[1.,0.], camera_forward:[0.,1.], fade:0.,
             hud_visible:true, boss_fight:false, in_cave:true, graces:vec![], beacons:vec![], points:vec![] }
+    }
+
+    #[test]
+    fn paper_stays_fixed_in_world_space_across_movement_rotation_and_zoom() {
+        let mut minimap=Minimap::new(Path::new("missing-test-game"),test_config(),None);
+        let world=[8709.25,10777.75];let expected=world.map(|v|v/PAPER_PERIOD);
+        for angle in [0.0_f32,0.7,2.4] {
+            minimap.camera_right=[angle.cos(),angle.sin()];
+            minimap.camera_forward=[-angle.sin(),angle.cos()];
+            for position in [[8700.,237.,10700.],[8710.,245.,10780.]] {
+                for scale in [0.6,2.4,6.4] {
+                    let screen=minimap.to_screen([world[0]-position[0],world[1]-position[2]]).map(|v|v*scale);
+                    let uv=minimap.paper_uv(screen,position,scale);
+                    assert!((0..2).all(|i|(uv[i]-expected[i]).abs()<0.00003));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn contours_follow_slopes_and_join_at_shared_triangle_edges() {
+        let a=[[0.,0.,0.],[10.,4.,0.],[10.,4.,10.]];
+        let b=[[0.,0.,0.],[10.,4.,10.],[0.,0.,10.]];
+        let first=height_contour(a,2.).unwrap();let second=height_contour(b,2.).unwrap();
+        assert!(first.contains(&[5.,2.,5.]) && second.contains(&[5.,2.,5.]));
+        assert!(first.iter().chain(second.iter()).all(|p|p[1]==2.));
+        assert!(height_contour([[0.,0.,0.],[10.,0.,0.],[0.,0.,10.]],0.).is_none());
+        assert!(height_contour(a,5.).is_none());
+        assert!(height_contour(a,4.).is_none());
     }
 
     #[test]
@@ -134,13 +188,15 @@ mod dungeon_render_tests {
                 write!(file,"[{},{},{},{},{},{},{},{}]",v.pos[0],v.pos[1],v.uv[0],v.uv[1],v.col[0],v.col[1],v.col[2],v.col[3]).unwrap();
             }
             let mut indices=Vec::new();
+            let mut commands=Vec::new();
             for command in list.commands() {
                 if let hudhook::imgui::DrawCmd::Elements {count,cmd_params}=command {
+                    commands.push(format!("{{\"first\":{},\"count\":{count},\"texture\":{}}}",indices.len(),cmd_params.texture_id.id()));
                     indices.extend(list.idx_buffer()[cmd_params.idx_offset..cmd_params.idx_offset+count].iter()
                         .map(|&v|v as usize+cmd_params.vtx_offset));
                 }
             }
-            write!(file,"],\"indices\":{indices:?}}}").unwrap();
+            write!(file,"],\"indices\":{indices:?},\"commands\":[{}]}}",commands.join(",")).unwrap();
         }
         write!(file,"]}}").unwrap();
     }
@@ -153,10 +209,12 @@ mod dungeon_render_tests {
             dungeon::Triangle {points:[[0.,0.,0.],[10.,0.,10.],[0.,0.,10.]],section:0}],boundaries:vec![],ramps:vec![] };
         let mut minimap=Minimap::new(Path::new("missing-test-game-directory"),test_config(),Some(map));
         minimap.alpha=1.0;
+        minimap.paper=Some(TextureId::new(1));
         let mut context=Context::create();
         context.set_ini_filename(None);
         context.io_mut().display_size=[800.,600.];
         context.io_mut().delta_time=1./60.;
+        context.io_mut().backend_flags.insert(hudhook::imgui::BackendFlags::RENDERER_HAS_VTX_OFFSET);
         context.fonts().build_rgba32_texture();
         {
             let ui=context.frame();
@@ -166,9 +224,14 @@ mod dungeon_render_tests {
             assert_eq!(unsafe {(*hudhook::imgui::sys::igGetForegroundDrawList()).Flags},flags);
         }
         let data=context.render();
-        let seam=sample(data,[400.02,299.97]);
-        let interior=sample(data,[405.0,300.0]);
-        assert!((0..3).all(|i| (seam[i]-interior[i]).abs()<2.0),"seam={seam:?}, interior={interior:?}");
+        // Compare each pixel with its own material sample: neighbouring paper grain varies.
+        for point in [[400.02,299.97],[405.0,300.0]] {
+            let actual=sample(data,point);
+            let uv=minimap.paper_uv([point[0]-400.,point[1]-300.],[5.,0.,5.],96./dungeon::ZOOM[minimap.zoom]);
+            let texture=paper_sample(uv);
+            let expected:[f32;3]=std::array::from_fn(|i|texture[i]*[246.,236.,208.][i]);
+            assert!((0..3).all(|i|(actual[i]-expected[i]).abs()<2.),"point={point:?}, actual={actual:?}, expected={expected:?}");
+        }
     }
 
     #[test]
@@ -185,11 +248,12 @@ mod dungeon_render_tests {
             poses.push((name,center));
         }
         let config = Config { trail: false, rotate: true, compass: true,
-            hide_in_boss_fights: false, hide_in_caves: true, dungeon_mode: true, outdoor_layers:true,
+            hide_in_boss_fights: false, hide_in_caves: true, dungeon_mode: true, outdoor_layers:true, parchment_maps:true,
             dungeon_height_band: 2.0, dungeon_floor_key: None, size: 1.0,
             margin: 24.0, toggle_key: None, zoom_key: None };
         let mut minimap = Minimap::new(Path::new("missing-test-game-directory"), config, Some(map));
         minimap.alpha = 1.0;
+        minimap.paper=Some(TextureId::new(1));
         let mut context = Context::create();
         context.set_ini_filename(None);
         context.io_mut().display_size = [800.,600.];
@@ -236,8 +300,10 @@ mod dungeon_render_tests {
         paths.sort();assert_eq!(paths.len(),60);
         let mut minimap=Minimap::new(Path::new("missing-test-game-directory"),test_config(),None);
         minimap.alpha=1.;
+        minimap.paper=Some(TextureId::new(1));
         let mut context=Context::create();context.set_ini_filename(None);
         context.io_mut().display_size=[800.,600.];context.io_mut().delta_time=1./60.;
+        context.io_mut().backend_flags.insert(hudhook::imgui::BackendFlags::RENDERER_HAS_VTX_OFFSET);
         context.fonts().build_rgba32_texture();
         for path in paths {
             let map=DungeonMap::load(&path).unwrap();
@@ -260,6 +326,7 @@ mod dungeon_render_tests {
                         }
                         let data=context.render();
                         assert!(data.total_vtx_count>0,"no geometry for {path:?} {position:?}");
+                        assert!(data.draw_lists().map(|l|l.commands().count()).sum::<usize>()<64,"unbatched paper draws: {path:?}");
                         for list in data.draw_lists() {for v in list.vtx_buffer() {
                             assert!(v.pos.iter().all(|x|x.is_finite()),"nonfinite {path:?}");
                             assert!((v.pos[0]-400.).hypot(v.pos[1]-300.)<=98.,"outside frame {path:?}");
@@ -317,6 +384,7 @@ mod dungeon_render_tests {
         let loader=outdoor::Loader::spawn(dir,&dir.join("render-test.log")).unwrap();
         let mut minimap=Minimap::new(Path::new("missing-test-game"),test_config(),None).with_outdoor_loader(Some(loader));
         minimap.alpha=1.0;
+        minimap.paper=Some(TextureId::new(1));
         let mut context=Context::create();context.set_ini_filename(None);
         context.io_mut().display_size=[800.,600.];context.io_mut().delta_time=1./60.;
         // Match hudhook's DX12 backend, including >64k-vertex draw-list support.
@@ -354,7 +422,16 @@ mod dungeon_render_tests {
                     }
                     let data=context.render();elapsed+=start.elapsed();frames+=1;
                     assert!(data.total_vtx_count>0);
-                    let center=sample(data,[400.02,300.03]);assert!(center[0]>130. && center[0]>center[2],"{id} {level}: {center:?}");
+                    assert!(data.draw_lists().map(|l|l.commands().count()).sum::<usize>()<64,"unbatched outdoor paper draws: {id}");
+                    // Fine dark ink may cross the exact cursor pixel; the surrounding
+                    // supporting path must still contain readable warm current-level paper.
+                    let mut warmest=[0.;3];
+                    for dx in [-2.,0.02,2.] {for dy in [-2.,0.03,2.] {
+                        let pixel=sample(data,[400.+dx,300.+dy]);
+                        if pixel[0]>warmest[0] {warmest=pixel;}
+                    }}
+                    let background=paper_sample(minimap.paper_uv([0.,0.],point,96./ZOOM_RANGES[zoom]))[0]*99.;
+                    assert!(warmest[0]>background+25. && warmest[0]>warmest[2],"{id} {level}: {warmest:?}, background={background}");
                     for list in data.draw_lists(){for v in list.vtx_buffer(){
                         assert!(v.pos.iter().all(|v|v.is_finite()));assert!((v.pos[0]-400.).hypot(v.pos[1]-300.)<=98.0);
                     }}
@@ -389,6 +466,7 @@ pub struct Minimap {
     frame: Option<TextureId>,
     arrow: Option<TextureId>,
     beacon: Option<TextureId>,
+    paper: Option<TextureId>,
     map_texture: Option<TextureId>,
     /// What `map_texture` currently shows.
     map_window: Option<(MapId, [i32; 2])>,
@@ -426,6 +504,7 @@ impl Minimap {
             frame: None,
             arrow: None,
             beacon: None,
+            paper: None,
             map_texture: None,
             map_window: None,
             requested_window: None,
@@ -512,6 +591,7 @@ impl ImguiRenderLoop for Minimap {
         self.frame = load_png(render_context, FRAME_PNG);
         self.arrow = load_png(render_context, ARROW_PNG);
         self.beacon = load_png(render_context, BEACON_PNG);
+        if self.config.parchment_maps { self.paper = load_png(render_context, PAPER_PNG); }
     }
 
     fn before_render<'a>(
@@ -678,6 +758,26 @@ impl Minimap {
         [sx * rx - sy * fx, sx * rz - sy * fz]
     }
 
+    /// World-anchored material coordinates keep the paper fixed when walking or turning.
+    fn paper_uv(&self,screen:[f32;2],position:[f32;3],scale:f32)->[f32;2] {
+        let world=self.to_world(screen.map(|v|v/scale));
+        [(world[0]+position[0])/PAPER_PERIOD,(world[1]+position[2])/PAPER_PERIOD]
+    }
+
+    fn paint_polygon(&self,draw:&DrawListMut,points:&[[f32;2]],position:[f32;3],scale:f32,center:[f32;2],tint:[u8;3]) {
+        let Some(texture)=self.paper else {return;};
+        if points.len()<3 {return;}
+        let screen=|p:[f32;2]|[p[0]+center[0],p[1]+center[1]];
+        let uv=|p|self.paper_uv(p,position,scale);
+        // The fourth vertex repeats the third; only the first triangle has area.
+        // hudhook's wrap sampler lets adjacent clipped polygons share one material.
+        for i in 1..points.len()-1 {
+            let [a,b,c]=[points[0],points[i],points[i+1]];
+            draw.add_image_quad(texture,screen(a),screen(b),screen(c),screen(c))
+                .uv(uv(a),uv(b),uv(c),uv(c)).col(self.color(tint,1.0)).build();
+        }
+    }
+
     /// Screen direction of a compass bearing, where 0 is north (+Z) and 90 is east (+X).
     fn bearing(&self, degrees: f32) -> [f32; 2] {
         let (sin, cos) = degrees.to_radians().sin_cos();
@@ -832,6 +932,14 @@ impl Minimap {
     fn draw_geometry(&self,ui:&Ui,draw:&DrawListMut,map:&DungeonMap,position:[f32;3],floor:f32,
         range:f32,band:f32,view:View,context_extent:f32,center:[f32;2],radius:f32,s:f32) {
         let scale=radius/range;
+        let painted=self.config.parchment_maps && self.paper.is_some();
+        if painted {
+            let disc:Vec<_>=(0..DISC_SEGMENTS).map(|i| {
+                let angle=TAU*i as f32/DISC_SEGMENTS as f32;
+                [angle.cos()*(radius-s),angle.sin()*(radius-s)]
+            }).collect();
+            self.paint_polygon(draw,&disc,position,scale,center,[99,91,74]);
+        }
         let low = floor - band;
         let high = floor + band;
         let project = |p: [f32; 3]| {
@@ -846,6 +954,9 @@ impl Minimap {
         layers.push((low,high,LEVEL_FILL,LEVEL_EDGE,1.45));
         // Complete each background level before drawing the bright current level on top.
         for (bottom,top,fill,edge,width) in layers {
+        let current=bottom==low && top==high;
+        let tint=if current {[246,236,208]} else if top==low {[113,101,83]} else {[104,140,182]};
+        let mut contours=Vec::new();
         {
         let _opaque_mesh_edges=SolidMeshFill::foreground();
         for triangle in &map.triangles {
@@ -865,9 +976,30 @@ impl Minimap {
                 let a=clipped[i]; let b=clipped[(i+1)%clipped.len()]; a[0]*b[1]-b[0]*a[1]
             }).sum();
             if area < 0.0 { clipped.reverse(); }
-            for point in &mut clipped { point[0] += center[0]; point[1] += center[1]; }
-            draw.add_polyline(clipped, self.color(fill, 1.0)).filled(true).build();
+            if painted {
+                self.paint_polygon(draw,&clipped,position,scale,center,tint);
+                if current {
+                    // Fixed world-height contours: no per-triangle shading or moving bands.
+                    // Restrict to this slab; contours come from actual sloping geometry.
+                    let mut height=(bottom/4.0).ceil()*4.0;
+                    while height<top {
+                        if let Some(line)=height_contour(triangle.points,height) {
+                            if let Some(line)=dungeon::clip_segment_disc(line.map(project),radius-s) {
+                                contours.push(line);
+                            }
+                        }
+                        height+=4.0;
+                    }
+                }
+            } else {
+                for point in &mut clipped { point[0] += center[0]; point[1] += center[1]; }
+                draw.add_polyline(clipped, self.color(fill, 1.0)).filled(true).build();
+            }
         }
+        }
+        for mut line in contours {
+            for p in &mut line {p[0]+=center[0];p[1]+=center[1];}
+            draw.add_line(line[0],line[1],self.color([104,80,47],0.28)).thickness(0.6*s).build();
         }
         for &boundary in &map.boundaries {
             if [0,2].iter().any(|&axis|boundary.iter().all(|p|p[axis]<position[axis]-range)
@@ -876,7 +1008,21 @@ impl Minimap {
             let Some(line) = line else { continue; };
             let Some(mut line) = dungeon::clip_segment_disc(line.map(project), radius-s) else { continue; };
             for p in &mut line { p[0]+=center[0]; p[1]+=center[1]; }
-            draw.add_line(line[0], line[1], self.color(edge, 0.95)).thickness(width*s).build();
+            if painted && current {
+                // Keep distant narrow paths open: screen-space strokes must not grow
+                // wider than the navigation they describe when zooming out.
+                let ink_width=(scale*0.4).clamp(0.35*s,0.9*s);
+                let outdoor_map=map.block[0]>=60;
+                if !outdoor_map && scale>=2.*s {
+                    draw.add_line(line[0],line[1],self.color([48,36,21],0.22)).thickness(2.5*ink_width).build();
+                }
+                // Dense outdoor navigation has overlapping partition edges; softer
+                // ochre ink keeps that detail from blacking out the ground below it.
+                let ink=if outdoor_map {[144,111,69]} else {[74,56,33]};
+                draw.add_line(line[0],line[1],self.color(ink,0.95)).thickness(ink_width).build();
+            } else {
+                draw.add_line(line[0], line[1], self.color(edge, 0.95)).thickness(width*s).build();
+            }
         }
         }
         // Connected sloping patches give geometric up/down hints; they are not door markers.
@@ -1228,6 +1374,25 @@ impl Minimap {
 /// Normal gameplay: no menu changing the HUD and no fade covering the screen.
 fn in_control(snapshot: &Snapshot) -> bool {
     snapshot.hud_visible && snapshot.fade < 0.05
+}
+
+/// Intersect a sloping walkable triangle with an absolute-height plane.
+fn height_contour(points:[[f32;3];3],height:f32)->Option<[[f32;3];2]> {
+    let min=points.iter().map(|p|p[1]).fold(f32::INFINITY,f32::min);
+    let max=points.iter().map(|p|p[1]).fold(f32::NEG_INFINITY,f32::max);
+    if max-min<0.6 {return None;}
+    let mut intersections=Vec::with_capacity(2);
+    for i in 0..3 {
+        let a=points[i];let b=points[(i+1)%3];
+        // Half-open crossing avoids duplicate hits at a vertex.
+        if (a[1]<=height && b[1]>height) || (b[1]<=height && a[1]>height) {
+            let t=(height-a[1])/(b[1]-a[1]);
+            intersections.push(std::array::from_fn(|axis|a[axis]+(b[axis]-a[axis])*t));
+        }
+    }
+    if intersections.len()!=2 {return None;}
+    let [a,b]=[intersections[0],intersections[1]];
+    if (a[0]-b[0]).hypot(a[2]-b[2])<0.05 {None} else {Some([a,b])}
 }
 
 fn load_png(render_context: &mut dyn RenderContext, bytes: &[u8]) -> Option<TextureId> {

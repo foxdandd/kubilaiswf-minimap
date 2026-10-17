@@ -1,0 +1,7 @@
+Original reusable material generated with the built-in image-generation tool.
+The reference was a local preview of the game's existing outdoor map, used only
+for palette and paper feel. No reference geography is included in this asset.
+The generated PNG has no EXIF or text metadata. Included under this project's MIT license.
+
+Final prompt:
+Use case: stylized-concept. Asset type: seamless reusable game minimap paper/ground texture. Input image is the existing game's map, for palette, paper grain, and muted antique pigment feel ONLY. Generate a NEW original square 1024x1024 texture: edge-to-edge flat, seamless tileable aged buff parchment, delicate paper fibres, fine irregular stipple and extremely subtle diffuse hand-brushed sepia/ochre washes. Average warm buff around RGB 210,188,149, low contrast, no dark or bright focal areas. Closely match the quiet aged cartographic material visible beneath the reference's line work. This texture will be clipped in code to real extracted map geometry; all walls, routes and symbols are drawn separately from verified geometry. Therefore this asset MUST contain NO roads, paths, buildings, trees, mountains, coastlines, room shapes, borders, circles, labels, text, icons, map compass, folds, cracks, watermark or vignette. Do not repaint the reference's geographic layout. Uniform material detail at all edges, no perspective, no lighting gradient. It should look like a clean original antique fantasy map's unmarked paper field rather than a photographed sheet.
