@@ -315,6 +315,9 @@ impl Minimap {
         self.draw_points(&draw_list, player, center, radius, s);
         self.draw_graces(&draw_list, player, center, radius, s);
         self.draw_beacons(ui, &draw_list, player, center, radius, s);
+        if self.config.coop_players {
+            self.draw_coop(&draw_list, player, center, radius, s);
+        }
 
         let letters = if self.config.compass {
             ["N", "E", "S", "W"].as_slice()
@@ -594,6 +597,66 @@ impl Minimap {
                 self.color([255, 244, 220], opacity),
                 &number,
             );
+        }
+    }
+
+    /// Pale blue arrows facing where the partner faces, held on the rim when out of range.
+    fn draw_coop(
+        &self,
+        draw_list: &DrawListMut,
+        player: &Snapshot,
+        center: [f32; 2],
+        radius: f32,
+        s: f32,
+    ) {
+        let pixels_per_meter = radius / ZOOM_RANGES[self.zoom];
+        let rim = radius - 12.0 * s;
+        for partner in &player.coop {
+            let d = self.to_screen([
+                partner.position[0] - player.position[0],
+                partner.position[1] - player.position[1],
+            ]);
+            let mut offset = [d[0] * pixels_per_meter, d[1] * pixels_per_meter];
+            let distance = length(offset);
+            let inside = distance <= rim;
+            if !inside {
+                offset = [offset[0] / distance * rim, offset[1] / distance * rim];
+            }
+            let at = [center[0] + offset[0], center[1] + offset[1]];
+            let Some(forward) = normalize(self.to_screen(partner.facing)) else {
+                continue;
+            };
+            let right = [-forward[1], forward[0]];
+            let size = if inside { 7.0 } else { 5.5 } * s;
+            let point = |f: f32, r: f32| {
+                [
+                    at[0] + (forward[0] * f + right[0] * r) * size,
+                    at[1] + (forward[1] * f + right[1] * r) * size,
+                ]
+            };
+            let (tip, left, back, right) = (
+                point(1.0, 0.0),
+                point(-0.7, -0.75),
+                point(-0.35, 0.0),
+                point(-0.7, 0.75),
+            );
+            let opacity = if inside { 1.0 } else { 0.8 };
+            let fill = self.color([130, 200, 255], opacity);
+            draw_list
+                .add_triangle(tip, left, back, fill)
+                .filled(true)
+                .build();
+            draw_list
+                .add_triangle(tip, back, right, fill)
+                .filled(true)
+                .build();
+            draw_list
+                .add_polyline(
+                    vec![tip, left, back, right, tip],
+                    self.color(BLACK, 0.85 * opacity),
+                )
+                .thickness(1.2 * s)
+                .build();
         }
     }
 

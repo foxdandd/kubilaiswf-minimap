@@ -2,7 +2,8 @@ use std::sync::{Mutex, OnceLock};
 
 use eldenring::cs::{
     BlockId, BonfireWarpParam, CSCamera, CSEventFlagMan, CSFade, CSFeManHudState, CSFeManImp,
-    CSMenuManImp, SoloParamRepository, WorldChrMan, WorldMapLegacyConvParam, WorldMapPointParam,
+    CSMenuManImp, PlayerIns, SoloParamRepository, WorldChrMan, WorldMapLegacyConvParam,
+    WorldMapPointParam,
 };
 use fromsoftware_shared::FromStatic;
 use hudhook::windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -35,6 +36,14 @@ pub struct Snapshot {
     pub beacons: Vec<Beacon>,
     /// Includes whatever map mods like Map for Goblins add.
     pub points: Vec<MapPoint>,
+    /// Other players in the session, Seamless Co-op partners included, in the same space.
+    pub coop: Vec<CoopPlayer>,
+}
+
+#[derive(Clone, Copy)]
+pub struct CoopPlayer {
+    pub position: [f32; 2],
+    pub facing: [f32; 2],
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -121,7 +130,35 @@ fn read() -> Option<Snapshot> {
         graces: discovered_graces(position, space),
         beacons: map.map_or_else(Vec::new, placed_beacons),
         points: map.map_or_else(Vec::new, |map| visible_points(map, position, space)),
+        coop: coop_players(world_chr_man, player, position, space),
     })
+}
+
+/// The game leaves other players' block positions unset, but their physics positions are live
+/// and share Havok space with ours, so they are placed by their offset from the main player.
+fn coop_players(
+    world_chr_man: &WorldChrMan,
+    player: &PlayerIns,
+    position: [f32; 2],
+    space: i32,
+) -> Vec<CoopPlayer> {
+    let origin = &player.chr_ins.chr_ctrl.physics_model_matrix.3;
+    world_chr_man
+        .player_chr_set
+        .characters()
+        .filter(|other| !std::ptr::eq(&**other, player))
+        .filter(|other| locate(other.chr_ins.block_id, [0.0, 0.0]).1 == space)
+        .map(|other| {
+            let model = &other.chr_ins.chr_ctrl.physics_model_matrix;
+            CoopPlayer {
+                position: [
+                    position[0] + model.3.0 - origin.0,
+                    position[1] + model.3.2 - origin.2,
+                ],
+                facing: [-model.2.0, -model.2.2],
+            }
+        })
+        .collect()
 }
 
 /// Converts a block-local position to the minimap's coordinates: (position, space, map).
