@@ -1,19 +1,76 @@
-# Dungeon and height-aware outdoor minimap pilot 8
+# Dungeon and terrain minimap pilot 9 — upstream 0.5.0
 
-Local test build based on kubilaiswf's MIT-licensed Minimap, upstream commit
-ff2b9e4ce7b71ddcb503acd202081953183173aa. Keep the original copyright and LICENSE.
+Local test based on kubilaiswf's MIT-licensed Minimap, upstream v0.5.0 commit
+5ae48a5522df02f896965145038cfd6c073d6f4c. Preserve LICENSE and the included
+THIRD-PARTY-NOTICES.txt for Map for Goblins DLL's imported icon atlas.
 
-## Current validation
+## Current behavior and checks
 
-All 39 pilot 8 tests passed using local game data: 719 outdoor files, 60 dungeon
-layouts / 1,080 frames, 1,681 DLC tile cells and 864 walking-replay samples.
-Marker fixtures cover Albinauric Village, Fog Rift and Tombsward. The preview
-uses the real renderer with offline fixture placement, not a gameplay capture.
-Character-loaded marker alignment, transitions and performance remain to test.
-The pilot 8 source and package remain local; the GitHub README describes this
-unpublished test separately from the public source baseline.
+All 50 tests passed with local game data. This includes 719 outdoor navigation
+files, 60 dungeon layouts / 1,080 frames, 1,681 DLC cells, 1,005 walking samples
+(Village 550 / Ellac 181 / Rauh 274), and 33 sparse-overhead samples in the reported
+m61_45_47 and m61_48_41 tiles. Three targeted checks reproduced unwanted switching
+before their fixes: narrow overhead, an edge gap, and walking into open sky while
+remaining on the same lower ground. A sustained climb can still leave that area.
 
-## What to test
+Auto entry needs overhead at the player plus coverage at five of nine probes
+across an 8 m footprint. Existing support/warp checks remain. Open sky on the same
+connected lower sheet now retains Local until a supported climb of 48 m above
+the last confirmed covered anchor, or a different supported area, supplies exit
+evidence. An exit also needs travel beyond the 18 m edge margin and 2 s of open
+support. Geometry indices remap across tile refreshes. F8 Surface stays immediate.
+
+The source carries upstream 0.5.0's co-op arrows, native Map for Goblins DLL icons,
+Stormveil conversion fix and new default keys. Direct world references take
+priority over links to other dungeons; chains preserve Y offsets and DLC space.
+Local co-op arrows use local coordinates/range and omit distant floors. Actual
+multiplayer operation has not been tested. Existing installed F6/F7/F8 settings
+are preserved; fresh source defaults are F7/F8/F11. Missing coop_players defaults
+true; set false and restart to hide partners.
+
+## Terrain drawing and private data
+
+The new cartographic layer reads physical map-piece triangles, including water,
+in addition to the AI navigation. Ground extends beyond AI paths where physical
+geometry is available. Fixed-world shading and contours describe landforms;
+recorded MSB objects draw small trees, rocks and structure symbols. Fine navigation
+partitions and tiny disconnected patches are suppressed. Water planes are masked
+by nearby matching-height navigation, preventing whole engine tiles from appearing
+as rectangular lakes. Missing physical room floors/bridges retain validated path
+ground. The renderer still describes geometry, not verified physical walls/routes.
+
+Generated locally: 779 .land files (671 outdoor / 48 dungeon entries have physical
+surfaces; remaining entries fall back), 10,832,807 terrain faces including 313,058
+water faces, and 779 .scenery files with 17,643 classified placements. Aliases are
+conservative: unknown objects are skipped. Asset-built architecture and deep-water
+extent can be incomplete. No original geographic artwork is embedded in the DLL.
+All 779 sidecar pairs decode with their own block identity. Invalid/missing optional
+sidecars leave the navigation layout usable.
+
+The pilot 9 update requires an existing navigation installation. Replace the DLL,
+copy matching dungeons/ and outdoor/ sidecars into those existing directories,
+and retain the INI, .nav files and profiles. Include the notes, LICENSE and
+THIRD-PARTY-NOTICES.txt. The new DLL also works without the optional sidecars.
+
+To reproduce from your own navigation/MSB exports, prepare scenery with
+`tools/prepare_scenery.py` and physical map pieces with `tools/export-cartography.ps1`.
+Both accept an existing navigation root and a separate output root for an update.
+The exporter needs explicit GameRoot and SmithboxRoot; it reads original archives,
+supports single-axis placement rotations and reports skipped/failed inputs.
+`tools/build-pilot.ps1 -CartographySmithboxRoot ... -WorldMapGameRoot ...` runs both
+exporters using its dungeon/outdoor export roots and copies the third-party notice.
+These game-derived sidecars and fixture CSVs are private and ignored by Git.
+
+Current previews use the real renderer with offline fixtures, not gameplay captures.
+Tests cover physical ground beyond navigation, material anchoring, icon UVs, marker
+coordinates/layers, co-op dungeon scaling, finite/clipped drawing and old INI keys.
+Character-loaded alignment, the user's exact village/DLC route, multiplayer and
+combined-profile gameplay performance remain unverified. Check those in game.
+
+## Earlier pilot notes
+
+The following records earlier builds. Current Auto rules and update requirements
+above take precedence over the older DLL-only update instructions.
 
 Pilot 8 replaces blue upper-floor fills with warm parchment relief: lighter
 raised edges and a small offset shadow above, softer dark shading below. Current

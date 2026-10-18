@@ -1,5 +1,7 @@
 /target
 /dist
 *.nav
+*.scenery
+*.land
 *.log
 __pycache__/

@@ -1,4 +1,5 @@
 mod archive;
+mod cartography;
 mod config;
 mod dungeon;
 mod dungeon_loader;

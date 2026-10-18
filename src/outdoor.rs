@@ -31,25 +31,31 @@ pub fn position(player:&Snapshot)->Point {[player.position[0],player.local_posit
 pub struct Coverage {
     pub above:Option<f32>, pub floor:Option<f32>, pub supported:bool,
     pub region:Option<usize>,
-    below:bool, timer:f32, last:Option<Point>,anchor:Option<Point>,
+    below:bool, timer:f32, last:Option<Point>,anchor:Option<Point>,covered_anchor:Option<Point>,covered_region:Option<usize>,
 }
 impl Coverage {
     #[cfg(test)]
     pub fn update(&mut self, map:&DungeonMap, point:Point, dt:f32) {
-        self.sample(map.triangles.iter(),point,dt,||None);
+        self.sample(map.triangles.iter(),point,dt,||None,||true,false);
     }
     pub fn update_window(&mut self,window:&Window,point:Point,dt:f32) {
         let cell=((point[0]/32.).floor() as i32,(point[2]/32.).floor() as i32);
         let region=self.region;
+        let support=window.support_region(point,region);
+        let same_area=support.is_some() && support==self.covered_region;
         self.sample(window.cells.get(&cell).into_iter().flatten().map(|&i|&window.map.triangles[i]),point,dt,
-            ||window.nearby_overhead(point,region));
-        if self.supported {self.region=window.support_region(point,self.region);}
+            ||window.nearby_overhead(point,region),||window.broad_overhead(point),same_area);
+        if self.supported {self.region=support;}
+        if self.covered_anchor==Some(point) {self.covered_region=self.region;}
     }
     pub fn rebind(&mut self,window:&Window) {
+        let held=self.region.is_some() && self.region==self.covered_region;
         self.region=self.anchor.and_then(|point|window.support_region(point,None));
+        self.covered_region=if held && self.region.is_some() {self.region}
+            else {self.covered_anchor.and_then(|p|window.support_region(p,None))};
     }
     fn sample<'a>(&mut self,triangles:impl Iterator<Item=&'a dungeon::Triangle>,point:Point,dt:f32,
-        nearby:impl FnOnce()->Option<f32>) {
+        nearby:impl FnOnce()->Option<f32>,broad:impl FnOnce()->bool,same_area:bool) {
         // A real warp/elevation jump must not carry a stale area latch with it.
         if self.last.is_some_and(|p|(p[0]-point[0]).hypot(p[2]-point[2])>80. || (p[1]-point[1]).abs()>32.) {
             *self=Self::default();
@@ -75,7 +81,20 @@ impl Coverage {
         // Missing AI support is unknown evidence, not an outdoor exit. Keep the
         // last floor and local layout while crossing holes or during a jump.
         if !self.supported {self.timer=0.;return;}
-        let target=above.is_some();
+        // A single bridge, roof shard or narrow nav strip is not evidence that
+        // the world-map artwork belongs to another area. Require broad cover.
+        let strong=above.is_some() && broad();
+        if strong {self.covered_anchor=Some(point);}
+        let near_anchor=self.covered_anchor.is_some_and(|p|(p[0]-point[0]).hypot(p[2]-point[2])<18.);
+        let target=strong || (self.below && above.is_some() && near_anchor);
+        // Standing at a sparse cover edge must not alternate every few seconds.
+        // Exit needs positive open support AND actual travel out of that area.
+        if self.below && !target && near_anchor {self.timer=0.;return;}
+        // Open sky is normal on a lower riverbank. Retain the same connected
+        // ground until a substantial climb (or a different area) proves an exit.
+        if self.below && !target && same_area && self.covered_anchor.is_some_and(|p|point[1]<p[1]+48.) {
+            self.timer=0.;return;
+        }
         if target!=self.below {
             self.timer+=dt.clamp(0.0,0.1);
             let delay=if target {0.35} else {2.0};
@@ -87,12 +106,35 @@ impl Coverage {
 
 pub struct Window {
     pub key:Key,pub name:String,pub map:DungeonMap,
-    pub regions:Vec<usize>,pub boundary_regions:Vec<Option<usize>>,
+    pub regions:Vec<usize>,pub boundary_regions:Vec<Option<usize>>,pub region_areas:Vec<f32>,
+    pub land_regions:Vec<Option<usize>>,
+    land_cells:HashMap<(i32,i32),Vec<usize>>,land_large:Vec<usize>,
+    pub nav_water:Vec<bool>,
     cells:HashMap<(i32,i32),Vec<usize>>,
 }
 impl Window {
+    pub fn land_candidates(&self,point:Point,range:f32)->Vec<usize> {
+        let mut candidates=self.land_large.clone();
+        for x in ((point[0]-range)/32.).floor() as i32..=((point[0]+range)/32.).floor() as i32 {
+            for z in ((point[2]-range)/32.).floor() as i32..=((point[2]+range)/32.).floor() as i32 {
+                candidates.extend(self.land_cells.get(&(x,z)).into_iter().flatten().copied());
+            }
+        }
+        candidates.sort_unstable();candidates.dedup();candidates
+    }
     pub fn covers(&self,key:Key)->bool {self.key[0]==key[0] && self.key[3]==key[3]
         && self.key[1].abs_diff(key[1])<=1 && self.key[2].abs_diff(key[2])<=1}
+
+    fn broad_overhead(&self,point:Point)->bool {
+        let mut covered=0;
+        for dx in [-4.,0.,4.] {for dz in [-4.,0.,4.] {
+            let at=[point[0]+dx,point[2]+dz];
+            let cell=((at[0]/32.).floor() as i32,(at[1]/32.).floor() as i32);
+            if self.cells.get(&cell).into_iter().flatten().any(|&i|
+                dungeon::height_at(self.map.triangles[i].points,at).is_some_and(|y|y-point[1]>12.)) {covered+=1;}
+        }}
+        covered>=5
+    }
 
     /// A connected terrain sheet follows a hillside without turning it into floors.
     /// A nearby overlapping sheet cannot win on tiny navigation-height differences.
@@ -216,13 +258,14 @@ fn invalid(message:&str)->io::Error {io::Error::new(io::ErrorKind::InvalidData,m
 fn load_window(directory:&Path,catalog:&HashMap<Key,String>,key:Key)->io::Result<Window> {
     let select=|mut tile:Key| {if !catalog.contains_key(&tile){tile[3]=0;}catalog.contains_key(&tile).then_some(tile)};
     let center=select(key).ok_or_else(||io::Error::new(io::ErrorKind::NotFound,"no navigation for this tile"))?;
-    let mut map=DungeonMap {block:key,triangles:vec![],boundaries:vec![],ramps:vec![]};
+    let mut map=DungeonMap {block:key,triangles:vec![],boundaries:vec![],ramps:vec![],scenery:vec![],land:vec![]};
     for x in key[1].saturating_sub(1)..=key[1].saturating_add(1).min(99) {
         for z in key[2].saturating_sub(1)..=key[2].saturating_add(1).min(99) {
             let Some(tile)=select([key[0],x,z,key[3]]) else {continue;};
             let part=match DungeonMap::load_for_block(&file(directory,tile),tile) {
                 Ok(part)=>part,Err(error) if tile!=center=>{let _=error;continue;},Err(error)=>return Err(error),
             };
+            map.land.extend(part.land);map.scenery.extend(part.scenery);
             map.triangles.extend(part.triangles);map.boundaries.extend(part.boundaries);map.ramps.extend(part.ramps);
         }
     }
@@ -231,7 +274,8 @@ fn load_window(directory:&Path,catalog:&HashMap<Key,String>,key:Key)->io::Result
 
 fn vertex_key(point:Point)->[i32;3] {point.map(|v|(v*20.).round() as i32)}
 
-fn index_window(key:Key,name:String,map:DungeonMap)->io::Result<Window> {
+fn index_window(key:Key,name:String,mut map:DungeonMap)->io::Result<Window> {
+    crate::cartography::sort_land(&mut map.land);
     // Built on the background loader, never rebuilt while drawing. Quantized 3D
     // vertices join tile seams without merging a bridge with the path below it.
     let mut parents:Vec<usize>=(0..map.triangles.len()).collect();
@@ -247,6 +291,11 @@ fn index_window(key:Key,name:String,map:DungeonMap)->io::Result<Window> {
         }
     }
     let regions:Vec<_>=(0..parents.len()).map(|i|root(&mut parents,i)).collect();
+    let mut region_areas=vec![0.;regions.len()];
+    for (triangle,&region) in map.triangles.iter().zip(&regions) {
+        let [a,b,c]=triangle.points;
+        region_areas[region]+=((b[0]-a[0])*(c[2]-a[2])-(b[2]-a[2])*(c[0]-a[0])).abs()*0.5;
+    }
     let boundary_regions=map.boundaries.iter().map(|line| {
         let a=*vertices.get(&vertex_key(line[0]))?;let b=*vertices.get(&vertex_key(line[1]))?;
         (regions[a]==regions[b]).then_some(regions[a])
@@ -265,7 +314,35 @@ fn index_window(key:Key,name:String,map:DungeonMap)->io::Result<Window> {
             cells.entry((x,z)).or_default().push(i);
         }}
     }
-    Ok(Window {key,name,map,cells,regions,boundary_regions})
+    let mut window=Window {key,name,map,cells,regions,boundary_regions,region_areas,land_regions:vec![],land_cells:HashMap::new(),land_large:vec![],nav_water:vec![]};
+    let mut bindings=HashMap::new();
+    window.land_regions=window.map.land.iter().map(|face| {
+        let point:Point=std::array::from_fn(|i|face.points.iter().map(|p|p[i]).sum::<f32>()/3.);
+        let cell=point.map(|v|(v/2.).floor() as i32);
+        *bindings.entry(cell).or_insert_with(||window.support_region([point[0],point[1]+1.,point[2]],None))
+    }).collect();
+    let mut land_references=0;
+    for (index,face) in window.map.land.iter().enumerate() {
+        let bounds:[(i32,i32);2]=std::array::from_fn(|axis| {
+            let a=if axis==0 {0}else{2};
+            ((face.points.iter().map(|p|p[a]).fold(f32::INFINITY,f32::min)/32.).floor() as i32,
+             (face.points.iter().map(|p|p[a]).fold(f32::NEG_INFINITY,f32::max)/32.).floor() as i32)
+        });
+        if bounds.iter().any(|(low,high)|high-low>32) {window.land_large.push(index);continue;}
+        for x in bounds[0].0..=bounds[0].1 {for z in bounds[1].0..=bounds[1].1 {
+            land_references+=1;if land_references>8_000_000 {return Err(invalid("cartographic index too large"));}
+            window.land_cells.entry((x,z)).or_default().push(index);
+        }}
+    }
+    window.nav_water=window.map.triangles.iter().map(|t| {
+        let p:Point=std::array::from_fn(|i|t.points.iter().map(|p|p[i]).sum::<f32>()/3.);
+        let cell=((p[0]/32.).floor() as i32,(p[2]/32.).floor() as i32);
+        window.land_cells.get(&cell).into_iter().flatten().chain(window.land_large.iter()).any(|&i| {
+            let face=&window.map.land[i];face.water && dungeon::height_at(face.points,[p[0],p[2]])
+                .is_some_and(|y|(-1.0..=3.0).contains(&(y-p[1])))
+        })
+    }).collect();
+    Ok(window)
 }
 
 #[cfg(test)]
@@ -286,12 +363,77 @@ mod tests {
     use super::*;
     fn plane(y:f32)->dungeon::Triangle {dungeon::Triangle {points:[[-10.,y,-10.],[10.,y,-10.],[0.,y,10.]],section:0}}
     #[test]
+    fn open_ground_under_a_narrow_bridge_does_not_enable_auto() {
+        let mut bridge=plane(270.);for p in &mut bridge.points {p[0]*=0.08;}
+        let window=Window::from_map(DungeonMap {block:[61,48,41,0],triangles:vec![plane(240.),bridge],boundaries:vec![],ramps:vec![],scenery:vec![],land:vec![]});
+        let mut state=Coverage::default();
+        for _ in 0..120 {state.update_window(&window,[0.,240.,0.],1./60.);}
+        assert!(!state.active(Mode::Auto),"a narrow overhead strip must not replace the outdoor map");
+    }
+    #[test]
+    fn standing_near_a_cover_edge_does_not_toggle_back_to_surface() {
+        let window=Window::from_map(DungeonMap {block:[61,45,47,0],triangles:vec![plane(240.),plane(410.)],boundaries:vec![],ramps:vec![],scenery:vec![],land:vec![]});
+        let open=Window::from_map(DungeonMap {block:window.key,triangles:vec![plane(240.)],boundaries:vec![],ramps:vec![],scenery:vec![],land:vec![]});
+        let mut state=Coverage::default();for _ in 0..5 {state.update_window(&window,[0.,240.,0.],0.1);}
+        assert!(state.active(Mode::Auto));
+        for _ in 0..90 {state.update_window(&open,[2.,240.,0.],0.1);}
+        assert!(state.active(Mode::Auto),"edge gaps must not toggle the map while the player stays in the same place");
+    }
+    #[test]
+    fn walking_into_open_sky_on_the_same_lower_ground_keeps_the_area() {
+        let face=|points|dungeon::Triangle {points,section:0};
+        let [a,b,c,d]=[[-200.,240.,-100.],[120.,240.,-100.],[120.,240.,100.],[-200.,240.,100.]];
+        let [e,f]=[[220.,320.,-100.],[220.,320.,100.]];
+        let window=Window::from_map(DungeonMap {block:[61,45,47,0],triangles:vec![
+            face([a,b,c]),face([a,c,d]),face([b,e,f]),face([b,f,c]),plane(410.)],boundaries:vec![],ramps:vec![],scenery:vec![],land:vec![]});
+        let mut state=Coverage::default();for _ in 0..5 {state.update_window(&window,[0.,240.,0.],0.1);}
+        assert!(state.active(Mode::Auto));let region=state.region;
+        for step in 1..=100 {
+            state.update_window(&window,[step as f32,240.,0.],0.1);
+            assert_eq!(state.region,region);
+            assert!(state.active(Mode::Auto),"open sky within the same lower area caused a surface flash");
+        }
+        // A sustained climb out of that lower area can still return to surface.
+        for x in 101..=220 {
+            let y=240.+(x as f32-120.).max(0.)*0.8;
+            state.update_window(&window,[x as f32,y,0.],0.1);
+        }
+        assert!(!state.active(Mode::Auto),"climbing to the upper area must release the lower-area latch");
+    }
+    #[test]
+    #[ignore="Requires OUTDOOR_NAV_TEST_DIR from the installed game"]
+    fn reported_dlc_tiles_reject_sparse_overhead_in_auto() {
+        let dir=std::env::var_os("OUTDOOR_NAV_TEST_DIR").expect("Set outdoor fixtures");let dir=Path::new(&dir);
+        let catalog:HashMap<_,_>=std::fs::read_to_string(dir.join("maps.tsv")).unwrap().lines().skip(1)
+            .map(|line|{let (id,name)=line.split_once('\t').unwrap();(parse_id(id).unwrap(),name.to_owned())}).collect();
+        let mut checked=0;
+        for key in [[61,45,47,0],[61,48,41,0]] {
+            let window=load_window(dir,&catalog,key).unwrap();let mut samples=0;
+            for t in window.map.triangles.iter().step_by(37) {
+                let point=std::array::from_fn(|i|t.points.iter().map(|p|p[i]).sum::<f32>()/3.);
+                if (point[0]-key[1] as f32*256.).abs()>128. || (point[2]-key[2] as f32*256.).abs()>128. {continue;}
+                let cell=((point[0]/32.).floor() as i32,(point[2]/32.).floor() as i32);
+                let mut old=Coverage::default();for _ in 0..5 {
+                    old.sample(window.cells.get(&cell).into_iter().flatten().map(|&i|&window.map.triangles[i]),point,0.1,||None,||true,false);
+                }
+                if !old.active(Mode::Auto) || window.broad_overhead(point) {continue;}
+                let mut state=Coverage::default();
+                for _ in 0..12 {state.update_window(&window,point,0.1);}
+                assert!(!state.active(Mode::Auto),"sparse upper geometry entered Auto at {key:?} {point:?}");
+                samples+=1;if samples>=20 {break;}
+            }
+            println!("Reported DLC tile {key:?}: {samples} sparse-overhead samples stay Surface");
+            checked+=samples;
+        }
+        assert!(checked>=10,"expected real sparse-overhead examples in reported tiles");
+    }
+    #[test]
     fn connected_hillsides_stay_one_region_and_bridges_stay_separate() {
         let low=plane(240.);let mut upper=plane(410.);
         for p in &mut upper.points {p[0]*=0.5;p[2]*=0.5;}
         let a=low.points[0];let b=low.points[1];
         let slope=dungeon::Triangle {points:[a,b,[0.,270.,-30.]],section:1};
-        let map=DungeonMap {block:[60,34,42,0],triangles:vec![low,upper,slope],boundaries:vec![[a,b]],ramps:vec![]};
+        let map=DungeonMap {block:[60,34,42,0],triangles:vec![low,upper,slope],boundaries:vec![[a,b]],ramps:vec![],scenery:vec![],land:vec![]};
         let window=Window::from_map(map);
         assert_eq!(window.regions[0],window.regions[2]);
         assert_ne!(window.regions[0],window.regions[1]);
@@ -304,7 +446,7 @@ mod tests {
         state.rebind(&window);assert_eq!(state.region,Some(window.regions[0]));
         let mut triangles=vec![plane(10.)];
         triangles.extend(window.map.triangles.iter().map(|t|dungeon::Triangle {points:t.points,section:t.section}));
-        let refreshed=Window::from_map(DungeonMap {block:window.key,triangles,boundaries:vec![],ramps:vec![]});
+        let refreshed=Window::from_map(DungeonMap {block:window.key,triangles,boundaries:vec![],ramps:vec![],scenery:vec![],land:vec![]});
         let refreshed_region=refreshed.support_region([4.,240.,0.],None).unwrap();
         assert_ne!(window.regions[0],refreshed_region,"test must change region indices");
         state.rebind(&refreshed);
@@ -313,8 +455,8 @@ mod tests {
     }
     #[test]
     fn auto_keeps_the_local_map_through_navigation_holes() {
-        let ground=DungeonMap {block:[60,34,42,0],triangles:vec![plane(240.),plane(410.)],boundaries:vec![],ramps:vec![]};
-        let hole=DungeonMap {block:ground.block,triangles:vec![],boundaries:vec![],ramps:vec![]};
+        let ground=DungeonMap {block:[60,34,42,0],triangles:vec![plane(240.),plane(410.)],boundaries:vec![],ramps:vec![],scenery:vec![],land:vec![]};
+        let hole=DungeonMap {block:ground.block,triangles:vec![],boundaries:vec![],ramps:vec![],scenery:vec![],land:vec![]};
         let mut state=Coverage::default();
         for _ in 0..5 {state.update(&ground,[0.,240.,0.],0.1);}
         for _ in 0..15 {
@@ -325,18 +467,19 @@ mod tests {
     }
     #[test]
     fn auto_requires_sustained_open_ground_before_returning_to_surface() {
-        let covered=DungeonMap {block:[60,34,42,0],triangles:vec![plane(240.),plane(410.)],boundaries:vec![],ramps:vec![]};
-        let open=DungeonMap {block:covered.block,triangles:vec![plane(240.)],boundaries:vec![],ramps:vec![]};
+        let covered=DungeonMap {block:[60,34,42,0],triangles:vec![plane(240.),plane(410.)],boundaries:vec![],ramps:vec![],scenery:vec![],land:vec![]};
+        let mut open_plane=plane(240.);for p in &mut open_plane.points {p[0]*=10.;p[2]*=10.;}
+        let open=DungeonMap {block:covered.block,triangles:vec![open_plane],boundaries:vec![],ramps:vec![],scenery:vec![],land:vec![]};
         let mut state=Coverage::default();
         for _ in 0..5 {state.update(&covered,[0.,240.,0.],0.1);}
         for _ in 0..8 {state.update(&open,[0.,240.,0.],0.1);assert!(state.active(Mode::Auto),"surface flash at sparse overhead data");}
         state.update(&covered,[0.,240.,0.],0.1);
-        for _ in 0..25 {state.update(&open,[0.,240.,0.],0.1);}
+        for _ in 0..25 {state.update(&open,[30.,240.,0.],0.1);}
         assert!(!state.active(Mode::Auto),"genuine open ground must still restore the surface");
     }
     #[test]
     fn lower_walkable_layer_wins_and_automatic_mode_has_hysteresis(){
-        let map=DungeonMap {block:[60,34,42,0],triangles:vec![plane(240.),plane(410.)],boundaries:vec![],ramps:vec![]};
+        let map=DungeonMap {block:[60,34,42,0],triangles:vec![plane(240.),plane(410.)],boundaries:vec![],ramps:vec![],scenery:vec![],land:vec![]};
         let mut state=Coverage::default();
         for _ in 0..5 {state.update(&map,[0.,240.,0.],0.1);}
         assert!(state.active(Mode::Auto));assert_eq!(state.above,Some(170.));
@@ -390,10 +533,11 @@ mod tests {
                         .filter(|y|(y-last[1]).abs()<2.)
                         .min_by(|a,b|(a-last[1]).abs().total_cmp(&(b-last[1]).abs()));
                     let Some(height)=height else {break;};point[1]=height;
-                    // Restrict this replay to the covered area; true exits are tested separately.
-                    if window.nearby_overhead(point,Some(region)).is_none() {break;}
+                    // Include open stretches of the same lower area, at running pace.
+                    // Sustained climbs out of the area are tested separately.
+                    if point[1]>start[1]+44. {break;}
                     if step%17==0 {state.rebind(&window);}
-                    state.update_window(&window,point,1./60.);
+                    state.update_window(&window,point,0.1);
                     assert!(state.active(Mode::Auto),"surface flash at {key:?} {point:?}");
                     assert_eq!(state.region,Some(region),"terrain sheet changed at {key:?} {point:?}");
                     last=point;steps+=1;

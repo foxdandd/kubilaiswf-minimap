@@ -2,9 +2,12 @@ use std::sync::{Mutex, OnceLock};
 
 use eldenring::cs::{
     BlockId, BonfireWarpParam, CSCamera, CSEventFlagMan, CSFade, CSFeManHudState, CSFeManImp,
-    CSMenuManImp, SoloParamRepository, WorldChrMan, WorldMapLegacyConvParam, WorldMapPointParam,
+    CSMenuManImp, PlayerIns, SoloParamRepository, WorldChrMan, WorldMapLegacyConvParam,
+    WorldMapPointParam,
 };
 use fromsoftware_shared::FromStatic;
+use hudhook::windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use hudhook::windows::core::w;
 
 use crate::maptiles::{self, MapId};
 
@@ -36,6 +39,16 @@ pub struct Snapshot {
     pub beacons: Vec<Beacon>,
     /// Includes whatever map mods like Map for Goblins add.
     pub points: Vec<MapPoint>,
+    /// Other players in the session, Seamless Co-op partners included, in the same space.
+    pub coop: Vec<CoopPlayer>,
+}
+
+#[derive(Clone, Copy)]
+pub struct CoopPlayer {
+    pub position: [f32; 2],
+    pub facing: [f32; 2],
+    pub local_position:Option<[f32;3]>,
+    pub world_height:f32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq,Debug)]
@@ -58,6 +71,8 @@ pub struct MapPoint {
     pub icon: u16,
     /// Defeated bosses and the like, which the game marks as done.
     pub cleared: bool,
+    /// Cell of `assets/mfg_icons.png` for markers added by Map for Goblins' DLL edition.
+    pub mfg_icon: Option<u16>,
 }
 
 /// Retain raw XYZ alongside world-map XZ; a map projection alone has no floor.
@@ -80,12 +95,16 @@ impl MapLocation {
 
 fn marker_location(block:BlockId,local:[f32;3],position:[f32;2])->MapLocation {
     let (world_area,world_height)=if matches!(block.area(),60|61) {(Some(block.area()),Some(local[1]))} else {
-        legacy_conversion(block,[local[0],local[2]]).map_or((None,None),|c|
-            (Some(c.dst_area),Some(local[1]+c.height_offset)))
+        legacy_conversion(block,[local[0],local[2]]).map_or((None,None),|(_,area,height)|
+            (Some(area),Some(local[1]+height)))
     };
     MapLocation {position,block_id:[block.area(),block.block(),block.region(),block.index()],local_position:local,
         world_area,world_height}
 }
+/// Icons in `assets/mfg_icons.png`, made from Map for Goblins DLL 2.1.5. The DLL appends them
+/// to the world map's icon frames in its alphabetical category order and numbers its markers'
+/// icons after the game's own frames, so the lowest number it uses ("ammo") is the first cell.
+pub const MFG_ICON_COUNT: u16 = 70;
 
 /// A beacon placed on the world map, numbered like the game numbers it.
 #[derive(Clone, Copy)]
@@ -147,7 +166,39 @@ fn read() -> Option<Snapshot> {
         graces: discovered_graces(position, space),
         beacons: map.map_or_else(Vec::new, placed_beacons),
         points: map.map_or_else(Vec::new, |map| visible_points(map, position, space)),
+        coop: coop_players(world_chr_man, player, position, space),
     })
+}
+
+/// The game leaves other players' block positions unset, but their physics positions are live
+/// and share Havok space with ours, so they are placed by their offset from the main player.
+fn coop_players(
+    world_chr_man: &WorldChrMan,
+    player: &PlayerIns,
+    position: [f32; 2],
+    space: i32,
+) -> Vec<CoopPlayer> {
+    let origin = &player.chr_ins.chr_ctrl.physics_model_matrix.3;
+    world_chr_man
+        .player_chr_set
+        .characters()
+        .filter(|other| !std::ptr::eq(&**other, player))
+        .filter(|other| locate(other.chr_ins.block_id, [0.0, 0.0]).1 == space)
+        .map(|other| {
+            let model = &other.chr_ins.chr_ctrl.physics_model_matrix;
+            CoopPlayer {
+                position: [
+                    position[0] + model.3.0 - origin.0,
+                    position[1] + model.3.2 - origin.2,
+                ],
+                facing: [-model.2.0, -model.2.2],
+                local_position:(other.chr_ins.block_id==player.current_block_id).then_some([
+                    player.block_position.x+model.3.0-origin.0,player.block_position.y+model.3.1-origin.1,
+                    player.block_position.z+model.3.2-origin.2]),
+                world_height:player.block_position.y+model.3.1-origin.1,
+            }
+        })
+        .collect()
 }
 
 /// Converts a block-local position to the minimap's coordinates: (position, space, map).
@@ -172,19 +223,11 @@ fn locate(block: BlockId, local: [f32; 2]) -> ([f32; 2], i32, Option<MapId>) {
     // Roundtable Hold has a world map spot but isn't anywhere on the map itself.
     let roundtable_hold = (block.area(), block.block()) == (11, 10);
     let conversion = legacy_conversion(block, local).filter(|_| !roundtable_hold);
-    let Some(conversion) = conversion else {
+    let Some((position, dst_area, _height)) = conversion else {
         return (local, i32::from(block), None);
     };
-    locate_legacy(block.area(),local,conversion)
-}
-
-fn locate_legacy(area:u8, local:[f32;2], conversion:&Conversion) -> ([f32;2],i32,Option<MapId>) {
-    let position = [
-        local[0] + conversion.offset[0],
-        local[1] + conversion.offset[1],
-    ];
     // Underground areas share the overworld's coordinates but have their own map.
-    let (space, map) = match (conversion.dst_area, area) {
+    let (space, map) = match (dst_area, block.area()) {
         (60, 12) => (12, Some(MapId::Underground)),
         (60, _) => (60, Some(MapId::Overworld)),
         (61, _) => (61, Some(MapId::ShadowRealm)),
@@ -196,6 +239,19 @@ fn locate_legacy(area:u8, local:[f32;2], conversion:&Conversion) -> ([f32;2],i32
 #[cfg(test)]
 mod map_location_tests {
     use super::*;
+    #[test]
+    fn legacy_links_prefer_world_rows_and_chain_height_without_looping() {
+        let direct=Conversion {src:(10,0,0),src_pos:[100.,100.],dst:(60,30,40),dst_pos:[5.,6.],height_offset:20.};
+        let wrong=Conversion {src:(10,0,0),src_pos:[0.,0.],dst:(34,0,0),dst_pos:[0.,0.],height_offset:999.};
+        // Stormveil's nearby dungeon link must not beat a direct world reference.
+        let (position,area,height)=legacy_from(&[wrong,direct],(10,0,0),[0.,0.]).unwrap();
+        assert_eq!((position,area,height),([30.*256.-95.,40.*256.-94.],60,20.));
+        let link=Conversion {src:(35,0,0),src_pos:[1.,2.],dst:(11,0,0),dst_pos:[10.,20.],height_offset:30.};
+        let world=Conversion {src:(11,0,0),src_pos:[10.,20.],dst:(61,44,43),dst_pos:[8.,9.],height_offset:50.};
+        assert_eq!(legacy_from(&[link,world],(35,0,0),[1.,2.]),Some(([44.*256.+8.,43.*256.+9.],61,80.)));
+        let cycle=Conversion {src:(35,0,0),src_pos:[0.,0.],dst:(35,0,0),dst_pos:[0.,0.],height_offset:0.};
+        assert!(legacy_from(&[cycle],(35,0,0),[0.,0.]).is_none());
+    }
 
     #[test]
     fn entrance_and_dlc_map_icons_are_not_item_pickups() {
@@ -223,39 +279,62 @@ mod map_location_tests {
 
     #[test]
     fn dlc_legacy_conversion_keeps_the_shadow_realm_atlas() {
-        // WorldMapLegacyConvParam row 1100: Belurat's local origin -> m61_44_43.
-        let mut conversion=Conversion {src:(20,0,0),src_pos:[0.,0.],dst_area:61,
-            offset:[44.*256.+108.45,43.*256.-90.97],height_offset:0.};
-        let (position,space,map)=locate_legacy(20,[0.,0.],&conversion);
-        assert_eq!(position,conversion.offset);assert_eq!(space,61);assert_eq!(map,Some(MapId::ShadowRealm));
-        conversion.dst_area=60;
-        assert_eq!(locate_legacy(12,[0.,0.],&conversion).2,Some(MapId::Underground));
-        assert_eq!(locate_legacy(10,[0.,0.],&conversion).2,Some(MapId::Overworld));
+        let conversion=Conversion {src:(20,0,0),src_pos:[0.,0.],dst:(61,44,43),
+            dst_pos:[108.45,-90.97],height_offset:12.};
+        let (position,area,height)=legacy_from(&[conversion],(20,0,0),[0.,0.]).unwrap();
+        assert_eq!(position,[44.*256.+108.45,43.*256.-90.97]);assert_eq!(area,61);assert_eq!(height,12.);
     }
 }
 
-/// One row of WorldMapLegacyConvParam: a point in a dungeon and where the world map draws it.
+/// One row of WorldMapLegacyConvParam: a point in a dungeon and the same point either on the
+/// world map grid or in another dungeon.
 struct Conversion {
     src: (u8, u8, u8),
     src_pos: [f32; 2],
-    dst_area: u8,
-    /// Added to a dungeon position to get the overworld-aligned position.
-    offset: [f32; 2],
+    dst: (u8, u8, u8),
+    dst_pos: [f32; 2],
     height_offset:f32,
 }
 
+/// The overworld and the Shadow of the Erdtree world, the areas the world map is drawn for.
+const WORLD_AREAS: [u8; 2] = [60, 61];
+
 static CONVERSIONS: OnceLock<Vec<Conversion>> = OnceLock::new();
 
-/// Dungeons that are drawn on the world map can list several reference points, each valid
-/// around itself, so the one nearest the player is used.
-fn legacy_conversion(block: BlockId, local: [f32; 2]) -> Option<&'static Conversion> {
-    let src = (block.area(), block.block(), block.region());
-    conversions()?
-        .iter()
-        .filter(|c| c.src == src)
-        .min_by(|a, b| {
-            distance_squared(a.src_pos, local).total_cmp(&distance_squared(b.src_pos, local))
-        })
+/// Returns the world map aligned position and its area. Dungeons list several reference
+/// points, each valid around itself, so the one nearest the player is used. Rows that lead
+/// to another dungeon (Stormveil to the Divine Tower and the like) are only followed when no
+/// row leads to the world map, as for the Shunning-Grounds, which go through Leyndell.
+fn legacy_conversion(block: BlockId, local: [f32; 2]) -> Option<([f32; 2], u8, f32)> {
+    legacy_from(conversions()?,(block.area(),block.block(),block.region()),local)
+}
+fn legacy_from(conversions:&[Conversion],mut src:(u8,u8,u8),mut at:[f32;2])->Option<([f32;2],u8,f32)> {
+    let mut height=0.;
+    for _ in 0..4 {
+        let nearest = |to_world: bool| {
+            conversions
+                .iter()
+                .filter(|c| c.src == src && WORLD_AREAS.contains(&c.dst.0) == to_world)
+                .min_by(|a, b| {
+                    distance_squared(a.src_pos, at).total_cmp(&distance_squared(b.src_pos, at))
+                })
+        };
+        if let Some(c) = nearest(true) {
+            let position = [
+                at[0] - c.src_pos[0] + f32::from(c.dst.1) * 256.0 + c.dst_pos[0],
+                at[1] - c.src_pos[1] + f32::from(c.dst.2) * 256.0 + c.dst_pos[1],
+            ];
+            return Some((position, c.dst.0,height+c.height_offset));
+        }
+        let c = nearest(false)?;
+        at = [
+            at[0] - c.src_pos[0] + c.dst_pos[0],
+            at[1] - c.src_pos[1] + c.dst_pos[1],
+        ];
+        height+=c.height_offset;
+        src = c.dst;
+    }
+    None
 }
 
 fn conversions() -> Option<&'static [Conversion]> {
@@ -266,19 +345,12 @@ fn conversions() -> Option<&'static [Conversion]> {
     let params = unsafe { SoloParamRepository::instance() }.ok()?;
     let conversions: Vec<Conversion> = (0..)
         .map_while(|i| params.get_row_by_index::<WorldMapLegacyConvParam>(i))
-        .map(|row| {
-            let src_pos = [row.src_pos_x(), row.src_pos_z()];
-            let dst = [
-                f32::from(row.dst_grid_x_no()) * 256.0 + row.dst_pos_x(),
-                f32::from(row.dst_grid_z_no()) * 256.0 + row.dst_pos_z(),
-            ];
-            Conversion {
-                src: (row.src_area_no(), row.src_grid_x_no(), row.src_grid_z_no()),
-                src_pos,
-                dst_area: row.dst_area_no(),
-                offset: [dst[0] - src_pos[0], dst[1] - src_pos[1]],
-                height_offset:row.dst_pos_y()-row.src_pos_y(),
-            }
+        .map(|row| Conversion {
+            src: (row.src_area_no(), row.src_grid_x_no(), row.src_grid_z_no()),
+            src_pos: [row.src_pos_x(), row.src_pos_z()],
+            dst: (row.dst_area_no(), row.dst_grid_x_no(), row.dst_grid_z_no()),
+            dst_pos: [row.dst_pos_x(), row.dst_pos_z()],
+            height_offset:row.dst_pos_y()-row.src_pos_y(),
         })
         .collect();
     // The params load after the player can already exist; try again next frame.
@@ -426,6 +498,9 @@ struct PointRow {
     /// Rows allowed without text skip the text condition.
     needs_text: bool,
     texts: [PointText; 8],
+    /// No map selected, which only Map for Goblins' DLL edition does.
+    unmasked: bool,
+    mfg_icon: Option<u16>,
 }
 
 #[derive(Clone, Copy)]
@@ -473,10 +548,11 @@ fn visible_points(map: MapId, position: [f32; 2], space: i32) -> Vec<MapPoint> {
                 row.icon
             };
             Some(MapPoint {
-                kind: point_kind(icon)?,
+                kind: if row.mfg_icon.is_some() {PointKind::Item}else{point_kind(icon)?},
                 location: row.location,
                 icon,
                 cleared: row.cleared_flag != u32::MAX && on(row.cleared_flag),
+                mfg_icon: row.mfg_icon,
             })
         })
         .collect()
@@ -507,13 +583,19 @@ fn points() -> Option<&'static [PointRow]> {
     conversions()?;
     // SAFETY: the param repository is only read here, on a game task.
     let params = unsafe { SoloParamRepository::instance() }.ok()?;
-    let points: Vec<PointRow> = (0..)
+    // SAFETY: only looks the module up by name.
+    let mfg_dll = unsafe { GetModuleHandleW(w!("MapForGoblins.dll")) }.is_ok();
+    let mut points: Vec<PointRow> = (0..)
         .map_while(|i| params.get_row_by_index::<WorldMapPointParam>(i))
         // Area labels name whole regions rather than places.
         .filter(|row| !row.is_area_icon())
         .map(|row| {
             let block = BlockId::from_parts(row.area_no(), row.grid_x_no(), row.grid_z_no(), 0);
-            let (position, space, _) = locate(block, [row.pos_x(), row.pos_z()]);
+            let (position, space, located) = locate(block, [row.pos_x(), row.pos_z()]);
+            // Map for Goblins' DLL edition clears the map selection of its rows and draws them
+            // itself, on the map their location belongs to.
+            let unmasked =
+                mfg_dll && !row.disp_mask00() && !row.disp_mask01() && !row.disp_mask02();
             // The second set of text flags is signed; non-positive means unused.
             let flag2 = |flag: i32| u32::try_from(flag).unwrap_or(0);
             let texts = [
@@ -591,17 +673,31 @@ fn points() -> Option<&'static [PointRow]> {
             PointRow {
                 location:marker_location(block,[row.pos_x(),row.pos_y(),row.pos_z()],position),
                 space,
-                on_overworld: row.disp_mask00(),
-                on_underground: row.disp_mask01(),
-                on_shadow_realm: row.disp_mask02(),
+                on_overworld: row.disp_mask00() || unmasked && located == Some(MapId::Overworld),
+                on_underground: row.disp_mask01()
+                    || unmasked && located == Some(MapId::Underground),
+                on_shadow_realm: row.disp_mask02() || unmasked && located == Some(MapId::ShadowRealm),
                 icon: row.icon_id(),
                 alt_icon: row.alt_icon_id(),
                 open_flag: row.event_flag_id(),
                 cleared_flag: row.cleared_event_flag_id(),
                 needs_text: !row.is_enable_no_text(),
                 texts,
+                unmasked,
+                mfg_icon: None,
             }
         })
         .collect();
+    let is_mfg = |row: &PointRow| row.unmasked && row.icon >= 100;
+    if let Some(first) = points
+        .iter()
+        .filter(|row| is_mfg(row))
+        .map(|row| row.icon)
+        .min()
+    {
+        for row in points.iter_mut().filter(|row| is_mfg(row)) {
+            row.mfg_icon = Some(row.icon - first).filter(|&cell| cell < MFG_ICON_COUNT);
+        }
+    }
     Some(POINTS.get_or_init(|| points))
 }

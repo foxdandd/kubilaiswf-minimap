@@ -30,6 +30,10 @@ const ARROW_PNG: &[u8] = include_bytes!("../assets/arrow.png");
 const PAPER_PNG: &[u8] = include_bytes!("../assets/cartography-paper.png");
 const PAPER_PERIOD: f32 = 64.0;
 const BEACON_PNG: &[u8] = include_bytes!("../assets/marker.png");
+/// Map for Goblins' icons, 48px cells, 9 per row (see `game::MFG_ICON_COUNT`).
+const MFG_ICONS_PNG: &[u8] = include_bytes!("../assets/mfg_icons.png");
+const MFG_ICON_COLUMNS: u16 = 9;
+const MFG_ICON_ROWS: u16 = game::MFG_ICON_COUNT.div_ceil(MFG_ICON_COLUMNS);
 /// Map radius as a fraction of frame.png's width: just past the widest point of its hole
 /// (measured 0.387 to 0.406) so the map always reaches under the frame.
 const FRAME_HOLE: f32 = 0.408;
@@ -49,7 +53,7 @@ const LOWER_EDGE: [u8;3] = [125,103,71];
 
 #[derive(Clone,Copy,PartialEq,Eq,Debug)]
 enum MarkerLayer {Current,Upper,Lower,Unknown}
-struct LocalMark {point:[f32;3],kind:PointKind,icon:u16,cleared:bool,layer:MarkerLayer,number:Option<u8>}
+struct LocalMark {point:[f32;3],kind:PointKind,icon:u16,cleared:bool,layer:MarkerLayer,number:Option<u8>,mfg_icon:Option<u16>}
 
 /// Filled neighbouring triangles must share opaque edges. Keep AA on for real outlines.
 struct SolidMeshFill { raw: *mut hudhook::imgui::sys::ImDrawList, flags:i32 }
@@ -125,7 +129,7 @@ mod dungeon_render_tests {
     }
 
     fn test_config() -> Config {
-        Config { trail:false, rotate:true, compass:true, hide_in_boss_fights:false,
+        Config { trail:false, rotate:true, compass:true, coop_players:true, hide_in_boss_fights:false,
             hide_in_caves:true, dungeon_mode:true, outdoor_layers:true, parchment_maps:true, dungeon_height_band:2.0,
             dungeon_floor_key:None, size:1.0, margin:24.0, toggle_key:None, zoom_key:None }
     }
@@ -134,12 +138,61 @@ mod dungeon_render_tests {
         Snapshot { block_id:dungeon::PILOT_BLOCK, local_position,
             position:[local_position[0],local_position[2]], space:30, map:None,
             facing:[0.,1.], camera_right:[1.,0.], camera_forward:[0.,1.], fade:0.,
-            hud_visible:true, boss_fight:false, in_cave:true, graces:vec![], beacons:vec![], points:vec![] }
+            hud_visible:true, boss_fight:false, in_cave:true, graces:vec![], beacons:vec![], points:vec![],coop:vec![] }
     }
 
     fn marker_location(block:[u8;4],point:[f32;3])->game::MapLocation {
         game::MapLocation {position:[point[0],point[2]],block_id:block,local_position:point,
             world_area:matches!(block[0],60|61).then_some(block[0]),world_height:Some(point[1])}
+    }
+    #[test]
+    fn upstream_mfg_first_and_last_icon_cells_keep_valid_uvs() {
+        let _lock=IMGUI_TEST_LOCK.lock().unwrap();
+        let decoder=png::Decoder::new(MFG_ICONS_PNG);let reader=decoder.read_info().unwrap();
+        assert_eq!((reader.info().width,reader.info().height),(432,384));
+        let mut minimap=Minimap::new(Path::new("missing-test-game"),test_config(),None);
+        minimap.alpha=1.;minimap.mfg_icons=Some(TextureId::new(2));
+        let mut context=Context::create();context.set_ini_filename(None);context.io_mut().display_size=[800.,600.];
+        context.io_mut().delta_time=1./60.;context.fonts().build_rgba32_texture();
+        {
+            let ui=context.frame();let draw=ui.get_foreground_draw_list();
+            for (cell,x) in [(0,370.),(69,430.)] {assert!(minimap.draw_mfg_icon(&draw,[x,300.],cell,1.,1.));}
+            assert!(!minimap.draw_mfg_icon(&draw,[400.,300.],70,1.,1.));
+        }
+        let data=context.render();assert_eq!(data.total_vtx_count,8);
+        for list in data.draw_lists() {for vertex in list.vtx_buffer() {
+            assert!(vertex.uv.iter().all(|v|(0.0..=1.0).contains(v)));
+            assert!((vertex.pos[0]-400.).hypot(vertex.pos[1]-300.)<96.);
+        }}
+    }
+    #[test]
+    fn physical_map_draws_ground_beyond_navigation_and_coop_uses_dungeon_scale() {
+        let _lock=IMGUI_TEST_LOCK.lock().unwrap();
+        let map=DungeonMap {block:dungeon::PILOT_BLOCK,triangles:vec![],boundaries:vec![],ramps:vec![],scenery:vec![],
+            land:vec![crate::cartography::Land {points:[[-20.,0.,-20.],[20.,0.,-20.],[0.,0.,20.]],water:false}]};
+        let mut minimap=Minimap::new(Path::new("missing-test-game"),test_config(),Some(map));
+        minimap.zoom=0;minimap.alpha=1.;minimap.paper=Some(TextureId::new(1));
+        let mut player=player_at([0.,0.,0.]);
+        player.coop.push(game::CoopPlayer {position:[10000.,10000.],facing:[0.,1.],local_position:Some([10.,0.,0.]),world_height:0.});
+        let mut context=Context::create();context.set_ini_filename(None);context.io_mut().display_size=[800.,600.];
+        context.io_mut().delta_time=1./60.;context.fonts().build_rgba32_texture();
+        {
+            let ui=context.frame();let draw=ui.get_foreground_draw_list();
+            minimap.draw_dungeon(ui,&draw,&player,[400.,300.],96.,1.);
+        }
+        let data=context.render();let ground=sample(data,[400.,320.]);
+        assert!(ground[0]>130.,"physical ground disappeared where AI has no path: {ground:?}");
+        {
+            let ui=context.frame();minimap.draw_coop(&ui.get_foreground_draw_list(),&player,[400.,300.],96.,1.);
+        }
+        let data=context.render();assert!(data.total_vtx_count>0);
+        // 10 m at a 15 m radius is 64 px to the right, not the outdoor 12 px.
+        for list in data.draw_lists() {for vertex in list.vtx_buffer() {assert!(vertex.pos[0]>450. && vertex.pos[0]<478.);}}
+        player.coop[0].local_position=Some([10.,100.,0.]);
+        {
+            let ui=context.frame();minimap.draw_coop(&ui.get_foreground_draw_list(),&player,[400.,300.],96.,1.);
+        }
+        assert_eq!(context.render().total_vtx_count,0,"a distant floor must not look like a partner on this floor");
     }
 
     #[test]
@@ -165,7 +218,7 @@ mod dungeon_render_tests {
         let map=DungeonMap {block:[60,0,0,0],triangles:vec![
             dungeon::Triangle {points:flat,section:0},
             dungeon::Triangle {points:[flat[0],flat[1],[0.,270.,-30.]],section:0},
-            dungeon::Triangle {points:flat.map(|p|[p[0],270.,p[2]]),section:1}],boundaries:vec![],ramps:vec![]};
+            dungeon::Triangle {points:flat.map(|p|[p[0],270.,p[2]]),section:1}],boundaries:vec![],ramps:vec![],scenery:vec![],land:vec![]};
         let window=outdoor::Window::from_map(map);
         let mut minimap=Minimap::new(Path::new("missing-test-game"),test_config(),None);
         let mut player=player_at([0.,240.,0.]);player.block_id=[60,0,0,0];player.position=[0.,0.];
@@ -175,7 +228,7 @@ mod dungeon_render_tests {
         for (point,kind,icon) in [([4.,240.,0.],PointKind::Grace,1),([0.,255.,-20.],PointKind::Landmark,39),
             ([0.,270.,0.],PointKind::Landmark,3),([0.,410.,0.],PointKind::Landmark,20),
             ([0.,225.,0.],PointKind::Item,1000)] {
-            player.points.push(game::MapPoint {location:marker_location(player.block_id,point),kind,icon,cleared:false});
+            player.points.push(game::MapPoint {location:marker_location(player.block_id,point),kind,icon,cleared:false,mfg_icon:None});
         }
         player.beacons.push(game::Beacon {number:1,position:[-20.,20.]});
         let marks=minimap.local_marks(&player);assert_eq!(marks.len(),5);
@@ -256,7 +309,7 @@ mod dungeon_render_tests {
                 if location.on_local_map(&player).is_none() {continue;}
                 if param=="BonfireWarpParam" {player.graces.push(*location);}
                 else if let Some(kind)=game::point_kind(*icon) {
-                    player.points.push(game::MapPoint {location:*location,kind,icon:*icon,cleared:false});
+                    player.points.push(game::MapPoint {location:*location,kind,icon:*icon,cleared:false,mfg_icon:None});
                 }
             }
             let marks=minimap.local_marks(&player);assert!(!marks.is_empty(),"no markers in {name}");
@@ -315,7 +368,7 @@ mod dungeon_render_tests {
         let _lock=IMGUI_TEST_LOCK.lock().unwrap();
         let map=DungeonMap {block:[60,34,42,0],triangles:vec![
             dungeon::Triangle {points:[[0.,240.,0.],[24.,264.,0.],[24.,264.,12.]],section:0},
-            dungeon::Triangle {points:[[0.,240.,0.],[24.,264.,12.],[0.,240.,12.]],section:0}],boundaries:vec![],ramps:vec![]};
+            dungeon::Triangle {points:[[0.,240.,0.],[24.,264.,12.],[0.,240.,12.]],section:0}],boundaries:vec![],ramps:vec![],scenery:vec![],land:vec![]};
         let window=outdoor::Window::from_map(map);
         let mut minimap=Minimap::new(Path::new("missing-test-game"),test_config(),None);
         minimap.alpha=1.;minimap.paper=Some(TextureId::new(1));
@@ -350,7 +403,7 @@ mod dungeon_render_tests {
         let offset=[35.*256.,42.*256.];
         let triangles=[240.,410.].map(|y|dungeon::Triangle {
             points:[[-10.,y,-10.],[10.,y,-10.],[0.,y,10.]].map(|p|[p[0]+offset[0],p[1],p[2]+offset[1]]),section:0});
-        let map=DungeonMap {block:center,triangles:triangles.into(),boundaries:vec![],ramps:vec![]};
+        let map=DungeonMap {block:center,triangles:triangles.into(),boundaries:vec![],ramps:vec![],scenery:vec![],land:vec![]};
         let window=outdoor::Window::from_map(map);
         let mut minimap=Minimap::new(Path::new("missing-test-game"),test_config(),None);
         let mut player=player_at([0.,240.,0.]);player.block_id=wanted;player.position=offset;
@@ -360,7 +413,7 @@ mod dungeon_render_tests {
         minimap.accept_outdoor(wanted,Err(std::io::Error::other("sparse neighbouring tile")));
         assert!(minimap.outdoor_active(&player));assert_eq!(minimap.outdoor.as_ref().unwrap().key,center);
         let stale=DungeonMap {block:[61,35,42,0],triangles:vec![
-            dungeon::Triangle {points:[[0.,0.,0.],[10.,0.,0.],[0.,0.,10.]],section:0}],boundaries:vec![],ramps:vec![]};
+            dungeon::Triangle {points:[[0.,0.,0.],[10.,0.,0.],[0.,0.,10.]],section:0}],boundaries:vec![],ramps:vec![],scenery:vec![],land:vec![]};
         minimap.accept_outdoor(stale.block,Ok(outdoor::Window::from_map(stale)));
         assert!(minimap.outdoor_active(&player));
     }
@@ -438,7 +491,7 @@ mod dungeon_render_tests {
         let _lock=IMGUI_TEST_LOCK.lock().unwrap();
         let map=DungeonMap { block:dungeon::PILOT_BLOCK, triangles:vec![
             dungeon::Triangle {points:[[0.,0.,0.],[10.,0.,0.],[10.,0.,10.]],section:0},
-            dungeon::Triangle {points:[[0.,0.,0.],[10.,0.,10.],[0.,0.,10.]],section:0}],boundaries:vec![],ramps:vec![] };
+            dungeon::Triangle {points:[[0.,0.,0.],[10.,0.,10.],[0.,0.,10.]],section:0}],boundaries:vec![],ramps:vec![],scenery:vec![],land:vec![] };
         let mut minimap=Minimap::new(Path::new("missing-test-game-directory"),test_config(),Some(map));
         minimap.alpha=1.0;
         minimap.paper=Some(TextureId::new(1));
@@ -479,7 +532,7 @@ mod dungeon_render_tests {
             }).min_by(|a,b|(a[1]-target_y).abs().total_cmp(&(b[1]-target_y).abs())).unwrap();
             poses.push((name,center));
         }
-        let config = Config { trail: false, rotate: true, compass: true,
+        let config = Config { trail: false, rotate: true, compass: true,coop_players:true,
             hide_in_boss_fights: false, hide_in_caves: true, dungeon_mode: true, outdoor_layers:true, parchment_maps:true,
             dungeon_height_band: 2.0, dungeon_floor_key: None, size: 1.0,
             margin: 24.0, toggle_key: None, zoom_key: None };
@@ -700,6 +753,7 @@ pub struct Minimap {
     arrow: Option<TextureId>,
     beacon: Option<TextureId>,
     paper: Option<TextureId>,
+    mfg_icons: Option<TextureId>,
     map_texture: Option<TextureId>,
     /// What `map_texture` currently shows.
     map_window: Option<(MapId, [i32; 2])>,
@@ -738,6 +792,7 @@ impl Minimap {
             arrow: None,
             beacon: None,
             paper: None,
+            mfg_icons: None,
             map_texture: None,
             map_window: None,
             requested_window: None,
@@ -835,6 +890,7 @@ impl ImguiRenderLoop for Minimap {
         self.arrow = load_png(render_context, ARROW_PNG);
         self.beacon = load_png(render_context, BEACON_PNG);
         if self.config.parchment_maps { self.paper = load_png(render_context, PAPER_PNG); }
+        self.mfg_icons = load_png(render_context, MFG_ICONS_PNG);
     }
 
     fn before_render<'a>(
@@ -1094,6 +1150,9 @@ impl Minimap {
         } else {
             self.draw_local_marks(ui,&draw_list,player,center,radius,s);
         }
+        if self.config.coop_players {
+            self.draw_coop(&draw_list, player, center, radius, s);
+        }
 
         let letters = if self.config.compass {
             ["N", "E", "S", "W"].as_slice()
@@ -1180,12 +1239,17 @@ impl Minimap {
         terrain:Option<(&outdoor::Window,usize)>) {
         let scale=radius/range;
         let painted=self.config.parchment_maps && self.paper.is_some();
+        let physical=painted && !map.land.is_empty();
+        let candidates=if physical {terrain.map_or_else(||(0..map.land.len()).collect(),|(w,_)|w.land_candidates(position,range))}
+            else {(0..map.triangles.len()).collect()};
         if painted {
             let disc:Vec<_>=(0..DISC_SEGMENTS).map(|i| {
                 let angle=TAU*i as f32/DISC_SEGMENTS as f32;
                 [angle.cos()*(radius-s),angle.sin()*(radius-s)]
             }).collect();
-            self.paint_polygon(draw,&disc,position,scale,center,[99,91,74]);
+            // Outdoor gaps are uncharted ground/obstacles, not black room voids.
+            let ground=if terrain.is_some() {[192,171,130]}else{[99,91,74]};
+            self.paint_polygon(draw,&disc,position,scale,center,ground);
         }
         let low = floor - band;
         let high = floor + band;
@@ -1203,19 +1267,29 @@ impl Minimap {
         for (bottom,top,fill,edge,width) in layers {
         let current=bottom==low && top==high;
         let tint=if current {[246,236,208]} else if top==low {[113,99,77]} else {[191,174,140]};
+        if physical && current {
+            // Map pieces do not contain asset-built bridges and every room floor.
+            // Retain validated path ground beneath the geographic drawing.
+            self.draw_navigation_ground(draw,map,position,bottom,top,scale,center,radius,s,terrain,false);
+        }
         let mut contours=Vec::new();
         {
         let _opaque_mesh_edges=SolidMeshFill::foreground();
-        for (index,triangle) in map.triangles.iter().enumerate() {
-            let primary=terrain.is_some_and(|(window,region)|window.regions[index]==region);
+        for &index in &candidates {
+            let points=if physical {map.land[index].points} else {map.triangles[index].points};
+            // Engine water planes extend under banks. Their cartographic extent
+            // follows matching-height ground, so rectangular tile planes stay hidden.
+            if physical && terrain.is_some() && map.land[index].water {continue;}
+            let primary=terrain.is_some_and(|(window,region)|if physical {window.land_regions[index]==Some(region)}else{window.regions[index]==region});
+            if !physical && painted && terrain.is_some_and(|(window,_)|!primary && window.region_areas[window.regions[index]]<12.) {continue;}
             if primary && !current {continue;}
-            if !primary && (triangle.points.iter().all(|p|p[1]<bottom) || triangle.points.iter().all(|p|p[1]>top)) {continue;}
+            if !primary && (points.iter().all(|p|p[1]<bottom) || points.iter().all(|p|p[1]>top)) {continue;}
             if (0..2).any(|axis| {
                 let a = if axis == 0 { 0 } else { 2 };
-                triangle.points.iter().all(|p| p[a] < position[a]-range) ||
-                triangle.points.iter().all(|p| p[a] > position[a]+range)
+                points.iter().all(|p| p[a] < position[a]-range) ||
+                points.iter().all(|p| p[a] > position[a]+range)
             }) { continue; }
-            let polygon=if primary {triangle.points.to_vec()} else {dungeon::clip_height(&triangle.points,bottom,top)};
+            let polygon=if primary {points.to_vec()} else {dungeon::clip_height(&points,bottom,top)};
             if polygon.len() < 3 { continue; }
             let screen: Vec<_> = polygon.into_iter().map(project).collect();
             let mut clipped = dungeon::clip_disc(&screen, radius - s);
@@ -1226,21 +1300,24 @@ impl Minimap {
             }).sum();
             if area < 0.0 { clipped.reverse(); }
             if painted {
-                self.paint_polygon(draw,&clipped,position,scale,center,tint);
+                let relief=if current {crate::cartography::relief(points)}else{1.};
+                let tint=if physical && current && map.land[index].water {[153,164,145]}else{tint};
+                self.paint_polygon(draw,&clipped,position,scale,center,tint.map(|v|(v as f32*relief) as u8));
                 if current {
                     // Fixed world-height contours: no per-triangle shading or moving bands.
                     // Restrict to this slab; contours come from actual sloping geometry.
-                    let contour_low=if primary {triangle.points.iter().map(|p|p[1]).fold(f32::INFINITY,f32::min)} else {bottom};
-                    let contour_high=if primary {triangle.points.iter().map(|p|p[1]).fold(f32::NEG_INFINITY,f32::max)} else {top};
-                    let mut height=(contour_low/4.0).ceil()*4.0;
+                    let contour_low=if primary {points.iter().map(|p|p[1]).fold(f32::INFINITY,f32::min)} else {bottom};
+                    let contour_high=if primary {points.iter().map(|p|p[1]).fold(f32::NEG_INFINITY,f32::max)} else {top};
+                    let interval=if terrain.is_some() {8.0}else{4.0};
+                    let mut height=(contour_low/interval).ceil()*interval;
                     let limit=contour_high.min(height+128.);
                     while height<limit {
-                        if let Some(line)=height_contour(triangle.points,height) {
+                        if let Some(line)=height_contour(points,height) {
                             if let Some(line)=dungeon::clip_segment_disc(line.map(project),radius-s) {
                                 contours.push(line);
                             }
                         }
-                        height+=4.0;
+                        height+=interval;
                     }
                 }
             } else {
@@ -1249,12 +1326,20 @@ impl Minimap {
             }
         }
         }
+        if physical && current && terrain.is_some() {
+            self.draw_navigation_ground(draw,map,position,bottom,top,scale,center,radius,s,terrain,true);
+        }
         for mut line in contours {
             for p in &mut line {p[0]+=center[0];p[1]+=center[1];}
             draw.add_line(line[0],line[1],self.color([104,80,47],0.28)).thickness(0.6*s).build();
         }
         for (index,&boundary) in map.boundaries.iter().enumerate() {
+            if physical && terrain.is_some() {continue;}
             let primary=terrain.is_some_and(|(window,region)|window.boundary_regions[index]==Some(region));
+            // Background speckles and NVA partitions are not cartographic walls.
+            if painted && terrain.is_some() && (!current || !primary) {continue;}
+            let length=(boundary[1][0]-boundary[0][0]).hypot(boundary[1][2]-boundary[0][2]);
+            if painted && terrain.is_some() && length<1.5 {continue;}
             if primary && !current {continue;}
             if [0,2].iter().any(|&axis|boundary.iter().all(|p|p[axis]<position[axis]-range)
                 || boundary.iter().all(|p|p[axis]>position[axis]+range)) {continue;}
@@ -1272,8 +1357,24 @@ impl Minimap {
                 }
                 // Dense outdoor navigation has overlapping partition edges; softer
                 // ochre ink keeps that detail from blacking out the ground below it.
-                let ink=if outdoor_map {[144,111,69]} else {[74,56,33]};
-                draw.add_line(line[0],line[1],self.color(ink,0.95)).thickness(ink_width).build();
+                let ink=if outdoor_map {[109,84,49]} else {[74,56,33]};
+                if outdoor_map {
+                    // An engraved bank with short relief strokes, not every mesh edge.
+                    draw.add_line(line[0],line[1],self.color([44,32,18],0.19)).thickness(ink_width*3.0).build();
+                    let delta=[line[1][0]-line[0][0],line[1][1]-line[0][1]];
+                    let span=delta[0].hypot(delta[1]);
+                    if span>5.*s {
+                        for i in 0..(span/(6.*s)).floor().min(20.) as usize {
+                            let t=(i as f32+0.5)*6.*s/span;
+                            let a=[line[0][0]+delta[0]*t,line[0][1]+delta[1]*t];
+                            let b=[a[0]-delta[1]/span*2.2*s,a[1]+delta[0]/span*2.2*s];
+                            if (b[0]-center[0]).hypot(b[1]-center[1])<radius-3.*s {
+                                draw.add_line(a,b,self.color(ink,0.28)).thickness(0.55*s).build();
+                            }
+                        }
+                    }
+                }
+                draw.add_line(line[0],line[1],self.color(ink,0.78)).thickness(ink_width).build();
             } else if painted {
                 self.draw_height_edge(draw,line,top!=low,s,center,radius);
             } else {
@@ -1281,6 +1382,7 @@ impl Minimap {
             }
         }
         }
+        if painted {self.draw_scenery(draw,map,position,floor,range,band,center,radius,s,terrain);}
         // Terrain slopes belong to this sheet. Outdoor contours carry that
         // information; signed floor-transition arrows remain available indoors.
         if terrain.is_some() {return;}
@@ -1329,6 +1431,76 @@ impl Minimap {
                 drawn=true;
             }
             if drawn {hints.push(origin);}
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_navigation_ground(&self,draw:&DrawListMut,map:&DungeonMap,position:[f32;3],bottom:f32,top:f32,
+        scale:f32,center:[f32;2],radius:f32,s:f32,terrain:Option<(&outdoor::Window,usize)>,water_only:bool) {
+        let _opaque_mesh_edges=SolidMeshFill::foreground();
+        let range=radius/scale;
+        for (index,t) in map.triangles.iter().enumerate() {
+            if water_only && !terrain.is_some_and(|(w,_)|w.nav_water[index]) {continue;}
+            let primary=terrain.is_some_and(|(w,r)|w.regions[index]==r);
+            if !primary && (t.points.iter().all(|p|p[1]<bottom) || t.points.iter().all(|p|p[1]>top)) {continue;}
+            if [0,2].iter().any(|&a|t.points.iter().all(|p|p[a]<position[a]-range)
+                || t.points.iter().all(|p|p[a]>position[a]+range)) {continue;}
+            let points=if primary {t.points.to_vec()}else{dungeon::clip_height(&t.points,bottom,top)};
+            let screen:Vec<_>=points.iter().map(|p|self.to_screen([p[0]-position[0],p[2]-position[2]]).map(|v|v*scale)).collect();
+            let mut clipped=dungeon::clip_disc(&screen,radius-s);if clipped.len()<3 {continue;}
+            let area:f32=(0..clipped.len()).map(|i|{let a=clipped[i];let b=clipped[(i+1)%clipped.len()];a[0]*b[1]-b[0]*a[1]}).sum();
+            if area<0. {clipped.reverse();}
+            self.paint_polygon(draw,&clipped,position,scale,center,if water_only {[153,164,145]}else{[246,236,208]});
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_scenery(&self,draw:&DrawListMut,map:&DungeonMap,position:[f32;3],floor:f32,range:f32,band:f32,
+        center:[f32;2],radius:f32,s:f32,terrain:Option<(&outdoor::Window,usize)>) {
+        let scale=radius/range;
+        let mut occupied:Vec<[f32;2]>=Vec::new();
+        for feature in &map.scenery {
+            let near=(feature.point[0]-position[0]).hypot(feature.point[2]-position[2]);
+            if near>range {continue;}
+            let on_sheet=terrain.is_some_and(|(w,r)|w.marker_region(feature.point)==Some(r));
+            if !on_sheet && (feature.point[1]-floor).abs()>band+3. {continue;}
+            let offset=self.to_screen([feature.point[0]-position[0],feature.point[2]-position[2]]).map(|v|v*scale);
+            let size=(feature.radius*scale).clamp(2.*s,6.*s);
+            if length(offset)>radius-size*2.5-s {continue;}
+            let at=[center[0]+offset[0],center[1]+offset[1]];
+            if occupied.iter().any(|p|(p[0]-at[0]).hypot(p[1]-at[1])<size*1.8) {continue;}
+            let local=|p:[f32;2]| {
+                let (sin,cos)=feature.yaw.sin_cos();
+                let p=self.to_screen([p[0]*cos+p[1]*sin,-p[0]*sin+p[1]*cos]);
+                [at[0]+p[0]*size,at[1]+p[1]*size]
+            };
+            let stroke=|points:&[[f32;2]],opacity:f32| {
+                draw.add_polyline(points.iter().copied().map(local).collect(),self.color([77,61,37],opacity)).thickness(0.6*s).build();
+            };
+            match feature.kind {
+                0=> {
+                    // A small crown cluster at a recorded tree, with trunk/engraving.
+                    for (p,r) in [([-0.45,0.1],0.55),([0.4,0.05],0.6),([0.,-0.45],0.65)] {
+                        let p=local(p);
+                        draw.add_circle(p,r*size,self.color([124,119,76],0.26)).filled(true).build();
+                        draw.add_circle(p,r*size,self.color([89,77,43],0.62)).thickness(0.55*s).build();
+                    }
+                    stroke(&[[-0.15,0.8],[0.,0.],[0.3,-0.35]],0.7);
+                    stroke(&[[-0.4,0.65],[0.4,0.65]],0.45);
+                },
+                1=> {
+                    let rock=[[-0.9,0.4],[-0.7,-0.35],[0.05,-0.65],[0.8,-0.05],[0.65,0.5],[-0.9,0.4]];
+                    draw.add_polyline(rock[..5].iter().copied().map(local).collect(),self.color([126,111,80],0.33)).filled(true).build();
+                    stroke(&rock,0.7);stroke(&[[-0.6,0.3],[0.05,-0.3],[0.55,0.1]],0.45);
+                },
+                _=> {
+                    let house=[[-0.8,0.5],[-0.8,-0.4],[0.,-0.9],[0.8,-0.4],[0.8,0.5],[-0.8,0.5]];
+                    draw.add_polyline(house[..5].iter().copied().map(local).collect(),self.color([130,101,63],0.4)).filled(true).build();
+                    stroke(&house,0.8);stroke(&[[-0.8,-0.4],[0.8,-0.4]],0.6);
+                    stroke(&[[0.,-0.9],[0.,-0.4]],0.6);stroke(&[[0.,0.5],[0.,0.]],0.75);
+                },
+            }
+            occupied.push(at);if occupied.len()>=180 {break;}
         }
     }
 
@@ -1460,28 +1632,28 @@ impl Minimap {
         let mut candidates=Vec::new();
         for grace in &player.graces {
             if let Some(point)=grace.on_local_map(player).filter(|&p|distance(p)<range) {
-                candidates.push((point,PointKind::Grace,1,false));
+                candidates.push((point,PointKind::Grace,1,false,None));
             }
         }
         for marker in &player.points {
             if let Some(point)=marker.location.on_local_map(player).filter(|&p|distance(p)<range) {
-                if marker.kind==PointKind::Grace && candidates.iter().any(|(p,k,_,_)|*k==PointKind::Grace
+                if marker.kind==PointKind::Grace && candidates.iter().any(|(p,k,_,_,_)|*k==PointKind::Grace
                     && (p[0]-point[0]).hypot(p[2]-point[2])<3. && (p[1]-point[1]).abs()<3.) {continue;}
-                candidates.push((point,marker.kind,marker.icon,marker.cleared));
+                candidates.push((point,marker.kind,marker.icon,marker.cleared,marker.mfg_icon));
             }
         }
         let priority=|kind:PointKind|match kind {PointKind::DungeonEntrance=>0,PointKind::Grace=>1,
             PointKind::Landmark=>2,PointKind::Npc=>3,PointKind::Boss|PointKind::Invasion=>4,PointKind::Item=>5};
         candidates.sort_by(|a,b|priority(a.1).cmp(&priority(b.1)).then_with(||distance(a.0).total_cmp(&distance(b.0))));
-        let mut marks:Vec<_>=candidates.into_iter().take(96).filter_map(|(point,kind,icon,cleared)| {
-            self.marker_layer(point,floor,band,outside).map(|layer|LocalMark {point,kind,icon,cleared,layer,number:None})
+        let mut marks:Vec<_>=candidates.into_iter().take(96).filter_map(|(point,kind,icon,cleared,mfg_icon)| {
+            self.marker_layer(point,floor,band,outside).map(|layer|LocalMark {point,kind,icon,cleared,layer,number:None,mfg_icon})
         }).collect();
         if outside {
             // World-map pins have XZ only. Preserve that uncertainty instead of assigning a floor.
             for pin in &player.beacons {
                 let point=[pin.position[0],position[1],pin.position[1]];
                 if distance(point)<range {marks.push(LocalMark {point,kind:PointKind::Landmark,icon:0,
-                    cleared:false,layer:MarkerLayer::Unknown,number:Some(pin.number)});}
+                    cleared:false,layer:MarkerLayer::Unknown,number:Some(pin.number),mfg_icon:None});}
             }
         }
         marks.sort_by(|a,b| {
@@ -1509,7 +1681,9 @@ impl Minimap {
                 self.draw_text_centered(ui,draw,[at[0],at[1]-s],self.color(PALE_GOLD,1.),"?");
                 self.draw_text_centered(ui,draw,[at[0]+7.*s,at[1]+5.*s],self.color(PALE_GOLD,1.),&number.to_string());
             } else {
-                self.draw_map_symbol(draw,at,marker.kind,marker.icon,s,opacity,ink);
+                if !marker.mfg_icon.is_some_and(|cell|self.draw_mfg_icon(draw,at,cell,s,opacity)) {
+                    self.draw_map_symbol(draw,at,marker.kind,marker.icon,s,opacity,ink);
+                }
                 if matches!(marker.layer,MarkerLayer::Upper|MarkerLayer::Lower) {
                     let sign=if marker.layer==MarkerLayer::Upper {-1.}else{1.};
                     let p=[at[0]+7.*s,at[1]+sign*2.*s];
@@ -1591,6 +1765,7 @@ impl Minimap {
                 center[1] + d[1] * pixels_per_meter,
             ];
             let opacity = if point.cleared { 0.45 } else { 1.0 };
+            if point.mfg_icon.is_some_and(|cell|self.draw_mfg_icon(draw_list,at,cell,s,opacity)) {continue;}
             let outline = self.color(BLACK, 0.8 * opacity);
             let dot = |r: f32, rgb: [u8; 3]| {
                 draw_list
@@ -1681,6 +1856,83 @@ impl Minimap {
                 self.color([255, 244, 220], opacity),
                 &number,
             );
+        }
+    }
+
+    /// Pale blue arrows facing where the partner faces, held on the rim when out of range.
+    fn draw_mfg_icon(&self,draw:&DrawListMut,at:[f32;2],cell:u16,s:f32,opacity:f32)->bool {
+        let Some(texture)=self.mfg_icons else {return false;};
+        if cell>=game::MFG_ICON_COUNT {return false;}
+        let (column,row)=(cell%MFG_ICON_COLUMNS,cell/MFG_ICON_COLUMNS);
+        let uv=|column:u16,row:u16|[column as f32/MFG_ICON_COLUMNS as f32,row as f32/MFG_ICON_ROWS as f32];
+        let half=7.*s;
+        draw.add_image(texture,[at[0]-half,at[1]-half],[at[0]+half,at[1]+half])
+            .uv_min(uv(column,row)).uv_max(uv(column+1,row+1)).col(self.color([255,255,255],opacity)).build();
+        true
+    }
+
+    fn draw_coop(
+        &self,
+        draw_list: &DrawListMut,
+        player: &Snapshot,
+        center: [f32; 2],
+        radius: f32,
+        s: f32,
+    ) {
+        let indoor=self.dungeon_active(player);
+        let local=indoor || self.outdoor_active(player);
+        let range=if indoor {dungeon::ZOOM[self.zoom]}else{ZOOM_RANGES[self.zoom]};
+        let pixels_per_meter = radius / range;
+        let rim = radius - 12.0 * s;
+        for partner in &player.coop {
+            let (delta,height)=if indoor {
+                let Some(point)=partner.local_position else {continue;};
+                ([point[0]-player.local_position[0],point[2]-player.local_position[2]],point[1]-player.local_position[1])
+            } else {([partner.position[0]-player.position[0],partner.position[1]-player.position[1]],partner.world_height-player.local_position[1])};
+            if !delta.iter().all(|v|v.is_finite()) || !height.is_finite() {continue;}
+            if local && height.abs()>if indoor {8.}else{outdoor::CONTEXT_EXTENT} {continue;}
+            let d = self.to_screen(delta);
+            let mut offset = [d[0] * pixels_per_meter, d[1] * pixels_per_meter];
+            let distance = length(offset);
+            let inside = distance <= rim;
+            if !inside {
+                offset = [offset[0] / distance * rim, offset[1] / distance * rim];
+            }
+            let at = [center[0] + offset[0], center[1] + offset[1]];
+            let Some(forward) = normalize(self.to_screen(partner.facing)) else {
+                continue;
+            };
+            let right = [-forward[1], forward[0]];
+            let size = if inside { 7.0 } else { 5.5 } * s;
+            let point = |f: f32, r: f32| {
+                [
+                    at[0] + (forward[0] * f + right[0] * r) * size,
+                    at[1] + (forward[1] * f + right[1] * r) * size,
+                ]
+            };
+            let (tip, left, back, right) = (
+                point(1.0, 0.0),
+                point(-0.7, -0.75),
+                point(-0.35, 0.0),
+                point(-0.7, 0.75),
+            );
+            let opacity = (if inside { 1.0 } else { 0.8 })*if local && height.abs()>4. {0.55}else{1.};
+            let fill = self.color([130, 200, 255], opacity);
+            draw_list
+                .add_triangle(tip, left, back, fill)
+                .filled(true)
+                .build();
+            draw_list
+                .add_triangle(tip, back, right, fill)
+                .filled(true)
+                .build();
+            draw_list
+                .add_polyline(
+                    vec![tip, left, back, right, tip],
+                    self.color(BLACK, 0.85 * opacity),
+                )
+                .thickness(1.2 * s)
+                .build();
         }
     }
 

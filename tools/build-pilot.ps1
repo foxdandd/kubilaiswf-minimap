@@ -7,6 +7,8 @@ param(
     [string]$RustupHome = '',
     [string]$GccBin = '',
     [string]$WorldMapGameRoot = '',
+    [string]$SceneryAliases = '',
+    [string]$CartographySmithboxRoot = '',
     [string[]]$OutdoorNavigationRoots = @(),
     [switch]$Offline,
     [switch]$SmallDungeons
@@ -34,7 +36,7 @@ New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null
 Copy-Item -LiteralPath (Join-Path $target 'release\kubilaiswf_minimap.dll') -Destination (Join-Path $OutputRoot 'tombsward-minimap-test.dll')
 $profileName=if ($SmallDungeons) {'dungeon-test.me3'} else {'tombsward-test.me3'}
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'package\tombsward-test.me3') -Destination (Join-Path $OutputRoot $profileName)
-Copy-Item -LiteralPath (Join-Path $sourceRoot 'LICENSE'),(Join-Path $sourceRoot 'TESTING.md') -Destination $OutputRoot
+Copy-Item -LiteralPath (Join-Path $sourceRoot 'LICENSE'),(Join-Path $sourceRoot 'TESTING.md'),(Join-Path $sourceRoot 'package/THIRD-PARTY-NOTICES.txt') -Destination $OutputRoot
 $ini = Get-Content -Raw -LiteralPath (Join-Path $sourceRoot 'package\minimap.ini')
 $ini = $ini.Replace('dungeon_mode = false','dungeon_mode = true').Replace('size = 1.0','size = 1.5')
 [IO.File]::WriteAllText((Join-Path $OutputRoot 'minimap.ini'),$ini,[Text.UTF8Encoding]::new($false))
@@ -47,12 +49,23 @@ if ($OutdoorNavigationRoots.Count) {
     if ($LASTEXITCODE -ne 0) { throw 'Outdoor data preparation failed' }
     $env:OUTDOOR_NAV_TEST_DIR=Join-Path $OutputRoot 'outdoor'
 } else { Remove-Item Env:OUTDOOR_NAV_TEST_DIR -ErrorAction SilentlyContinue }
+if ($CartographySmithboxRoot -and -not $SceneryAliases) {$SceneryAliases=Join-Path $CartographySmithboxRoot 'Assets/Aliases/ER/Assets.json'}
+if ($SceneryAliases) {
+    & $PythonExe (Join-Path $PSScriptRoot 'prepare_scenery.py') $NavigationRoot @OutdoorNavigationRoots --output $OutputRoot --aliases $SceneryAliases
+    if ($LASTEXITCODE -ne 0) { throw 'Scenery data preparation failed' }
+    $env:MINIMAP_SCENERY_TEST_ROOT=$OutputRoot
+} else { Remove-Item Env:MINIMAP_SCENERY_TEST_ROOT -ErrorAction SilentlyContinue }
+if ($CartographySmithboxRoot) {
+    if (-not $WorldMapGameRoot) {throw 'Physical cartography requires -WorldMapGameRoot'}
+    & (Join-Path $PSScriptRoot 'export-cartography.ps1') -LayoutRoots (@($NavigationRoot)+$OutdoorNavigationRoots) -NavigationRoot $OutputRoot -OutputRoot $OutputRoot -GameRoot $WorldMapGameRoot -SmithboxRoot $CartographySmithboxRoot
+}
 $env:TOMBSWARD_NAV_TEST_FILE = Join-Path $OutputRoot 'tombsward.nav'
 if ($SmallDungeons) { $env:DUNGEON_NAV_TEST_DIR=Join-Path $OutputRoot 'dungeons' }
 else { Remove-Item Env:DUNGEON_NAV_TEST_DIR -ErrorAction SilentlyContinue }
 $testOptions=@('--include-ignored')
+if (-not $SceneryAliases) { $testOptions+=@('--skip','all_scenery_sidecars_decode_with_their_own_map_identity') }
 if (-not $env:MINIMAP_MARKER_TEST_CSV -or -not $OutdoorNavigationRoots.Count) { $testOptions+=@('--skip','real_map_points_and_graces_align_with_local_layouts') }
-if (-not $OutdoorNavigationRoots.Count) { $testOptions+=@('--skip','real_outdoor_tiles_decode_and_reveal_overlapping_walkable_levels','--skip','real_outdoor_lower_and_upper_layers_render_separately','--skip','real_outdoor_loader_keeps_worlds_and_event_variants_separate','--skip','real_lower_terrain_walks_keep_the_region_and_mode_stable') }
+if (-not $OutdoorNavigationRoots.Count) { $testOptions+=@('--skip','real_outdoor_tiles_decode_and_reveal_overlapping_walkable_levels','--skip','real_outdoor_lower_and_upper_layers_render_separately','--skip','real_outdoor_loader_keeps_worlds_and_event_variants_separate','--skip','real_lower_terrain_walks_keep_the_region_and_mode_stable','--skip','reported_dlc_tiles_reject_sparse_overhead_in_auto') }
 if ($WorldMapGameRoot) { $env:MINIMAP_WORLD_TEST_ROOT=[IO.Path]::GetFullPath($WorldMapGameRoot) }
 else { $testOptions+=@('--skip','real_dlc_atlas_selects_and_decodes_game_tiles') }
 if (-not $SmallDungeons) { $testOptions+=@('--skip','real_maps_decode_and_background_loader_switches_exact_blocks','--skip','all_small_dungeons_render_at_multiple_heights_views_and_zooms','--skip','dungeon_selection_clears_old_geometry_during_rapid_warps') }

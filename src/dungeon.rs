@@ -20,6 +20,8 @@ pub struct DungeonMap {
     pub triangles: Vec<Triangle>,
     pub boundaries: Vec<[Point; 2]>,
     pub ramps: Vec<Ramp>,
+    pub scenery: Vec<crate::cartography::Scenery>,
+    pub land: Vec<crate::cartography::Land>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -61,7 +63,17 @@ impl DungeonMap {
         if size > 32 * 1024 * 1024 {
             return Err(invalid("dungeon data exceeds 32 MiB"));
         }
-        Self::decode(&std::fs::read(path)?)
+        let mut map=Self::decode(&std::fs::read(path)?)?;
+        // Optional sidecar failure leaves the validated geometry usable.
+        let scenery=path.with_extension("scenery");
+        #[cfg(test)]
+        let scenery=std::env::var_os("MINIMAP_SCENERY_TEST_ROOT").map_or(scenery.clone(),|root|
+            Path::new(&root).join(if map.block[0]>=60 {"outdoor"}else{"dungeons"}).join(scenery.file_name().unwrap()));
+        map.scenery=crate::cartography::load(&scenery,map.block).unwrap_or_default();
+        let land=scenery.with_extension("land");
+        map.land=crate::cartography::load_land(&land,map.block).unwrap_or_default();
+        crate::cartography::sort_land(&mut map.land);
+        Ok(map)
     }
 
     pub fn load_for_block(path: &Path, block: [u8;4]) -> io::Result<Self> {
@@ -99,7 +111,7 @@ impl DungeonMap {
             boundaries.push([read_point(data, &mut at)?, read_point(data, &mut at)?]);
         }
         let ramps=find_ramps(&triangles);
-        Ok(Self { block, triangles, boundaries, ramps })
+        Ok(Self { block, triangles, boundaries, ramps,scenery:vec![],land:vec![] })
     }
 
     /// Find the closest AI surface directly above/below the player's XZ, within 4 m.
@@ -285,7 +297,7 @@ mod tests {
     }
     #[test]
     fn stacked_floors_follow_player_height() {
-        let map = DungeonMap { block: PILOT_BLOCK, triangles: vec![triangle(0.0), triangle(5.0)], boundaries: vec![], ramps:vec![] };
+        let map = DungeonMap { block: PILOT_BLOCK, triangles: vec![triangle(0.0), triangle(5.0)], boundaries: vec![], ramps:vec![],scenery:vec![],land:vec![] };
         assert_eq!(map.floor_height([1.0, 0.2, 1.0]), 0.0);
         assert_eq!(map.floor_height([1.0, 5.2, 1.0]), 5.0);
         assert_eq!(map.floor_height([20.0, 7.0, 20.0]), 7.0);
@@ -297,7 +309,7 @@ mod tests {
     }
     #[test]
     fn jumping_does_not_select_a_closer_upper_floor() {
-        let map=DungeonMap {block:PILOT_BLOCK,triangles:vec![triangle(0.),triangle(5.)],boundaries:vec![],ramps:vec![]};
+        let map=DungeonMap {block:PILOT_BLOCK,triangles:vec![triangle(0.),triangle(5.)],boundaries:vec![],ramps:vec![],scenery:vec![],land:vec![]};
         assert_eq!(map.floor_height([1.,3.,1.]),0.);
         assert_eq!(map.floor_height([1.,5.05,1.]),5.);
         let mut tracker=FloorTracker::default();
@@ -306,13 +318,13 @@ mod tests {
         assert_eq!(tracker.height(),Some(0.));
         tracker.update(&map,[1.,5.05,1.],1./60.);
         assert_eq!(tracker.height(),Some(5.));
-        let close=DungeonMap {block:PILOT_BLOCK,triangles:vec![triangle(0.),triangle(0.3)],boundaries:vec![],ramps:vec![]};
+        let close=DungeonMap {block:PILOT_BLOCK,triangles:vec![triangle(0.),triangle(0.3)],boundaries:vec![],ramps:vec![],scenery:vec![],land:vec![]};
         assert_eq!(close.floor_height([1.,0.05,1.]),0.);
     }
     #[test]
     fn floor_changes_follow_slopes_smoothly_and_reset_on_warps() {
         let slope=Triangle {points:[[0.,0.,0.],[10.,5.,0.],[0.,0.,10.]],section:0};
-        let map=DungeonMap {block:PILOT_BLOCK,triangles:vec![slope],boundaries:vec![],ramps:vec![]};
+        let map=DungeonMap {block:PILOT_BLOCK,triangles:vec![slope],boundaries:vec![],ramps:vec![],scenery:vec![],land:vec![]};
         let mut tracker=FloorTracker::default();
         tracker.update(&map,[0.,0.,1.],1./60.);
         tracker.update(&map,[4.,2.,1.],1./60.);

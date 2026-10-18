@@ -10,6 +10,7 @@ pub struct Config {
     pub trail: bool,
     pub rotate: bool,
     pub compass: bool,
+    pub coop_players: bool,
     pub hide_in_boss_fights: bool,
     pub hide_in_caves: bool,
     pub dungeon_mode: bool,
@@ -30,10 +31,14 @@ impl Config {
             let _ = std::fs::write(path, DEFAULT_INI);
             DEFAULT_INI.to_owned()
         });
+        Self::from_text(&text)
+    }
+    fn from_text(text:&str)->Self {
         let mut config = Self {
             trail: true,
             rotate: true,
             compass: true,
+            coop_players: true,
             hide_in_boss_fights: false,
             hide_in_caves: true,
             dungeon_mode: false,
@@ -43,8 +48,8 @@ impl Config {
             dungeon_floor_key: Some(Key::F11),
             size: 1.0,
             margin: 24.0,
-            toggle_key: Some(Key::F9),
-            zoom_key: Some(Key::F10),
+            toggle_key: Some(Key::F7),
+            zoom_key: Some(Key::F8),
         };
         for line in text.lines().map(str::trim) {
             if line.starts_with([';', '#']) {
@@ -58,6 +63,7 @@ impl Config {
                 "trail" => set_bool(&mut config.trail, value),
                 "rotate" => set_bool(&mut config.rotate, value),
                 "compass" => set_bool(&mut config.compass, value),
+                "coop_players" => set_bool(&mut config.coop_players, value),
                 "hide_in_boss_fights" => set_bool(&mut config.hide_in_boss_fights, value),
                 "hide_in_caves" => set_bool(&mut config.hide_in_caves, value),
                 "dungeon_mode" => set_bool(&mut config.dungeon_mode, value),
@@ -73,6 +79,19 @@ impl Config {
             }
         }
         config
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn upstream_defaults_preserve_explicit_pilot_keys_and_new_coop_setting() {
+        let old=Config::from_text("toggle_key = F6\nzoom_key = F7\ndungeon_floor_key = F8\ndungeon_mode = true\n");
+        assert_eq!(old.toggle_key,Some(Key::F6));assert_eq!(old.zoom_key,Some(Key::F7));
+        assert_eq!(old.dungeon_floor_key,Some(Key::F8));assert!(old.dungeon_mode && old.coop_players);
+        let new=Config::from_text("coop_players=false\n");assert!(!new.coop_players);
+        assert_eq!(new.toggle_key,Some(Key::F7));assert_eq!(new.zoom_key,Some(Key::F8));
     }
 }
 
