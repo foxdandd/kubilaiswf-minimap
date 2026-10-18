@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::f32::consts::{PI, TAU};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use hudhook::imgui::{Context, DrawListMut, FontSource, ImColor32, TextureId, Ui};
 use hudhook::{ImguiRenderLoop, RenderContext};
@@ -146,6 +147,50 @@ mod dungeon_render_tests {
             world_area:matches!(block[0],60|61).then_some(block[0]),world_height:Some(point[1])}
     }
     #[test]
+    fn cached_terrain_uploads_once_and_never_during_loading() {
+        use std::time::{Duration,Instant};
+        struct Textures {loads:usize,replacements:usize}
+        impl RenderContext for Textures {
+            fn load_texture(&mut self,data:&[u8],width:u32,height:u32)->Result<TextureId,hudhook::windows::core::Error> {
+                assert_eq!((width,height),(1024,1024));assert_eq!(data.len(),1024*1024*4);
+                self.loads+=1;Ok(TextureId::new(2))
+            }
+            fn replace_texture(&mut self,id:TextureId,data:&[u8],width:u32,height:u32)->Result<(),hudhook::windows::core::Error> {
+                assert_eq!(id,TextureId::new(2));assert_eq!((width,height),(1024,1024));assert_eq!(data.len(),1024*1024*4);
+                self.replacements+=1;Ok(())
+            }
+        }
+        let _lock=IMGUI_TEST_LOCK.lock().unwrap();
+        let triangle=[[-100.,240.,-100.],[100.,240.,-100.],[0.,240.,100.]];
+        let window=outdoor::Window::from_map(DungeonMap {block:[60,0,0,0],triangles:vec![dungeon::Triangle {points:triangle,section:0}],
+            land:vec![],boundaries:vec![],ramps:vec![],scenery:vec![]});
+        let mut minimap=Minimap::new(Path::new("missing-test-game"),test_config(),None);
+        let mut player=player_at([0.,240.,0.]);player.block_id=window.key;player.in_cave=false;
+        minimap.outdoor_coverage.update_window(&window,[0.,240.,0.],0.1);
+        minimap.outdoor=Some(Arc::new(window));minimap.outdoor_mode=outdoor::Mode::Local;
+        minimap.paper=Some(TextureId::new(1));minimap.request_terrain(&player);
+        let mut ctx=Context::create();ctx.io_mut().display_size=[800.,600.];
+        let mut textures=Textures {loads:0,replacements:0};
+        player.fade=1.;minimap.last=Some(player.clone());
+        minimap.before_render(&mut ctx,&mut textures);assert_eq!(textures.loads,0);
+        player.fade=0.;minimap.last=Some(player.clone());
+        let deadline=Instant::now()+Duration::from_secs(3);
+        while minimap.terrain_image.is_none() {
+            minimap.before_render(&mut ctx,&mut textures);assert!(Instant::now()<deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        for _ in 0..60 {minimap.request_terrain(&player);minimap.before_render(&mut ctx,&mut textures);}
+        assert_eq!((textures.loads,textures.replacements),(1,0),"walking frames must reuse the uploaded image");
+        minimap.zoom=2;minimap.request_terrain(&player);
+        while textures.replacements==0 {
+            minimap.before_render(&mut ctx,&mut textures);assert!(Instant::now()<deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(textures.loads,1,"zoom must replace the existing texture, not leak GPU textures");
+        minimap.outdoor_mode=outdoor::Mode::Surface;minimap.request_terrain(&player);assert!(!minimap.outdoor_active(&player));
+        minimap.outdoor=None;assert!(!minimap.terrain_ready([0.,240.,0.],240.,160.));
+    }
+    #[test]
     fn upstream_mfg_first_and_last_icon_cells_keep_valid_uvs() {
         let _lock=IMGUI_TEST_LOCK.lock().unwrap();
         let decoder=png::Decoder::new(MFG_ICONS_PNG);let reader=decoder.read_info().unwrap();
@@ -223,7 +268,7 @@ mod dungeon_render_tests {
         let mut minimap=Minimap::new(Path::new("missing-test-game"),test_config(),None);
         let mut player=player_at([0.,240.,0.]);player.block_id=[60,0,0,0];player.position=[0.,0.];
         for _ in 0..5 {minimap.outdoor_coverage.update_window(&window,[0.,240.,0.],0.1);}
-        minimap.outdoor=Some(window);
+        minimap.outdoor=Some(Arc::new(window));
         let grace=marker_location(player.block_id,[4.,240.,0.]);player.graces.push(grace);
         for (point,kind,icon) in [([4.,240.,0.],PointKind::Grace,1),([0.,255.,-20.],PointKind::Landmark,39),
             ([0.,270.,0.],PointKind::Landmark,3),([0.,410.,0.],PointKind::Landmark,20),
@@ -324,7 +369,7 @@ mod dungeon_render_tests {
                 if outside {
                     let window=minimap.outdoor.as_ref().unwrap();
                     minimap.draw_geometry(ui,&draw,&window.map,point,point[1],ZOOM_RANGES[minimap.zoom],outdoor::HEIGHT_BAND,
-                        View::Layered,outdoor::CONTEXT_EXTENT,[400.,300.],96.,1.,minimap.outdoor_coverage.region.map(|r|(window,r)));
+                        View::Layered,outdoor::CONTEXT_EXTENT,[400.,300.],96.,1.,minimap.outdoor_coverage.region.map(|r|(&**window,r)));
                 } else {minimap.draw_dungeon(ui,&draw,&player,[400.,300.],96.,1.);}
                 minimap.draw_local_marks(ui,&draw,&player,[400.,300.],96.,1.);
             }
@@ -408,7 +453,7 @@ mod dungeon_render_tests {
         let mut minimap=Minimap::new(Path::new("missing-test-game"),test_config(),None);
         let mut player=player_at([0.,240.,0.]);player.block_id=wanted;player.position=offset;
         for _ in 0..5 {minimap.outdoor_coverage.update_window(&window,outdoor::position(&player),0.1);}
-        minimap.outdoor=Some(window);minimap.outdoor_key=Some(wanted);
+        minimap.outdoor=Some(Arc::new(window));minimap.outdoor_key=Some(wanted);
         assert!(minimap.outdoor_active(&player));
         minimap.accept_outdoor(wanted,Err(std::io::Error::other("sparse neighbouring tile")));
         assert!(minimap.outdoor_active(&player));assert_eq!(minimap.outdoor.as_ref().unwrap().key,center);
@@ -661,6 +706,76 @@ mod dungeon_render_tests {
     }
 
     #[test]
+    #[ignore="Requires OUTDOOR_NAV_TEST_DIR and physical cartography sidecars"]
+    fn reported_outdoor_map_drawing_cost() {
+        use std::time::{Duration,Instant};
+        let _lock=IMGUI_TEST_LOCK.lock().unwrap();
+        let dir=std::env::var_os("OUTDOOR_NAV_TEST_DIR").expect("Set outdoor fixtures");let dir=Path::new(&dir);
+        let loader=outdoor::Loader::spawn(dir,&dir.join("cost-test.log")).unwrap();
+        let mut minimap=Minimap::new(Path::new("missing-test-game"),test_config(),None);
+        minimap.paper=Some(TextureId::new(1));minimap.alpha=1.;
+        let mut context=Context::create();context.set_ini_filename(None);
+        context.io_mut().display_size=[800.,600.];context.io_mut().delta_time=1./60.;
+        context.io_mut().backend_flags.insert(hudhook::imgui::BackendFlags::RENDERER_HAS_VTX_OFFSET);
+        context.fonts().build_rgba32_texture();
+        for (key,point) in [([60,36,42,0],[9216.,240.,10752.]),([60,34,42,0],[8704.,240.,10752.]),
+            ([61,45,46,0],[11520.,0.,11776.])] {
+            loader.request(key);let deadline=Instant::now()+Duration::from_secs(20);
+            let window=loop {if let Some((_,result))=loader.poll() {break result.unwrap();}
+                assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(1));};
+            let point=if key==[60,36,42,0] {[point[0],window.map.floor_height(point),point[2]]}
+                else {outdoor::lower_sample(&DungeonMap::load(&dir.join(format!("m{:02}_{:02}_{:02}_{:02}.nav",key[0],key[1],key[2],key[3]))).unwrap()).unwrap().0};
+            let region=window.support_region(point,None).expect("supported terrain cost fixture");
+            println!("Cost fixture {key:?}: point={point:?}, land={}, nav={}, scenery={}",window.map.land.len(),window.map.triangles.len(),window.map.scenery.len());
+            let window=Arc::new(window);minimap.outdoor=Some(Arc::clone(&window));minimap.outdoor_coverage.region=Some(region);
+            let mut baker=crate::terrain_cache::Baker::spawn();
+            for (zoom,range) in ZOOM_RANGES.into_iter().enumerate() {
+                let start=Instant::now();baker.request(&window,region,point,point[1],zoom);
+                let image=loop {if let Some(image)=baker.poll() {break image;}
+                    assert!(start.elapsed()<Duration::from_secs(20),"terrain bake timeout");std::thread::sleep(Duration::from_millis(1));};
+                println!("Background bake {key:?} range={range}: {:.1} ms",start.elapsed().as_secs_f64()*1000.);
+                if let Some(root)=std::env::var_os("MINIMAP_CACHE_PREVIEW_DIR") {
+                    std::fs::create_dir_all(&root).unwrap();
+                    let path=Path::new(&root).join(format!("cached-{}-{}-{}-{zoom}.png",key[0],key[1],key[2]));
+                    let mut encoder=png::Encoder::new(std::fs::File::create(path).unwrap(),crate::terrain_cache::SIZE as u32,crate::terrain_cache::SIZE as u32);
+                    encoder.set_color(png::ColorType::Rgba);encoder.write_header().unwrap().write_image_data(&image.rgba).unwrap();
+                }
+                minimap.terrain_image=Some(image.key);minimap.terrain_texture=Some(TextureId::new(2));
+                let mut timings=Vec::new();let mut vertices=0;
+                for _ in 0..12 {
+                    let start=Instant::now();{
+                        let ui=context.frame();let draw=ui.get_foreground_draw_list();
+                        assert!(minimap.terrain_ready(point,point[1],range));
+                        minimap.draw_cached_terrain(&draw,point,point[1],range,[400.,300.],96.,1.);
+                    }
+                    vertices=context.render().total_vtx_count;timings.push(start.elapsed().as_secs_f64()*1000.);
+                }
+                timings.sort_by(f64::total_cmp);
+                println!("Cached drawing {key:?} range={range}: median={:.3} ms p95={:.3} ms vertices={vertices}",timings[6],timings[11]);
+                assert!(vertices<24_000,"terrain drawing must not resend the physical mesh every frame");
+                // Camera changes and walking within a valid patch must not need a new image.
+                for angle in [0.7_f32,2.4] {
+                    minimap.camera_right=[angle.cos(),angle.sin()];minimap.camera_forward=[-angle.sin(),angle.cos()];
+                    let moved=[point[0]+2.,point[1],point[2]-1.];assert!(minimap.terrain_ready(moved,point[1],range));
+                    {let ui=context.frame();minimap.draw_cached_terrain(&ui.get_foreground_draw_list(),moved,point[1],range,[400.,300.],96.,1.);}
+                    for list in context.render().draw_lists() {for command in list.commands() {
+                        let hudhook::imgui::DrawCmd::Elements {count,cmd_params}=command else {continue;};
+                        if cmd_params.texture_id!=TextureId::new(2) {continue;}
+                        for &index in &list.idx_buffer()[cmd_params.idx_offset..cmd_params.idx_offset+count] {
+                            let vertex=list.vtx_buffer()[index as usize+cmd_params.vtx_offset];
+                            let world=minimap.to_world([(vertex.pos[0]-400.)*range/96.,(vertex.pos[1]-300.)*range/96.]);
+                            let origin=image.key.origin();let expected=[(moved[0]+world[0]-origin[0])/image.key.span(),1.-(moved[2]+world[1]-origin[1])/image.key.span()];
+                            assert!((0..2).all(|i|(vertex.uv[i]-expected[i]).abs()<0.0001));
+                        }
+                    }}
+                }
+                minimap.camera_right=[1.,0.];minimap.camera_forward=[0.,1.];
+            }
+            minimap.terrain_image=None;
+        }
+    }
+
+    #[test]
     #[ignore="Requires OUTDOOR_NAV_TEST_DIR from the installed game"]
     fn real_outdoor_lower_and_upper_layers_render_separately() {
         use std::time::{Instant,Duration};
@@ -704,7 +819,7 @@ mod dungeon_render_tests {
                         let ui=context.frame();let draw=ui.get_foreground_draw_list();
                         minimap.draw_geometry(ui,&draw,&window.map,point,floor,ZOOM_RANGES[zoom],outdoor::HEIGHT_BAND,
                             View::Layered,outdoor::CONTEXT_EXTENT,[400.,300.],96.,1.0,
-                            window.support_region(point,None).map(|region|(window,region)));
+                            window.support_region(point,None).map(|region|(&**window,region)));
                     }
                     let data=context.render();elapsed+=start.elapsed();frames+=1;
                     assert!(data.total_vtx_count>0);
@@ -743,7 +858,10 @@ pub struct Minimap {
     dungeon_floor: FloorTracker,
     outdoor_loader:Option<outdoor::Loader>,
     outdoor_key:Option<outdoor::Key>,
-    outdoor:Option<outdoor::Window>,
+    outdoor:Option<Arc<outdoor::Window>>,
+    terrain_baker:Option<crate::terrain_cache::Baker>,
+    terrain_texture:Option<TextureId>,
+    terrain_image:Option<crate::terrain_cache::Key>,
     outdoor_mode:outdoor::Mode,
     outdoor_floor:FloorTracker,
     outdoor_coverage:outdoor::Coverage,
@@ -783,6 +901,9 @@ impl Minimap {
             outdoor_loader:None,
             outdoor_key:None,
             outdoor:None,
+            terrain_baker:None,
+            terrain_texture:None,
+            terrain_image:None,
             outdoor_mode:outdoor::Mode::Auto,
             outdoor_floor:FloorTracker::default(),
             outdoor_coverage:outdoor::Coverage::default(),
@@ -844,7 +965,7 @@ impl Minimap {
         // covers the player. Keep its working local geometry until a valid replacement.
         if let Ok(window)=result {
             self.outdoor_coverage.rebind(&window);
-            self.outdoor=Some(window);
+            self.outdoor=Some(Arc::new(window));
         }
     }
 
@@ -852,6 +973,48 @@ impl Minimap {
         outdoor::position(player).iter().all(|v|v.is_finite())
             && self.outdoor.as_ref().is_some_and(|w|outdoor::key(player).is_some_and(|key|w.covers(key)))
             && self.outdoor_coverage.active(self.outdoor_mode)
+    }
+
+    fn request_terrain(&mut self,player:&Snapshot) {
+        if !self.visible || !in_control(player) || !self.config.parchment_maps || !self.outdoor_active(player) {
+            if let Some(baker)=&mut self.terrain_baker {baker.cancel();}return;
+        }
+        let (Some(window),Some(region))=(&self.outdoor,self.outdoor_coverage.region) else {return;};
+        let point=outdoor::position(player);let floor=self.outdoor_floor.height().unwrap_or(point[1]);
+        let key=crate::terrain_cache::Key::new(window,region,point,floor,self.zoom);
+        if self.terrain_image==Some(key) {return;}
+        self.terrain_baker.get_or_insert_with(crate::terrain_cache::Baker::spawn).request(window,region,point,floor,self.zoom);
+    }
+
+    fn terrain_ready(&self,point:[f32;3],floor:f32,range:f32)->bool {
+        self.terrain_texture.is_some() && self.terrain_image.is_some_and(|key|
+            self.outdoor.as_ref().is_some_and(|w|self.outdoor_coverage.region.is_some_and(|r|key.usable(w,r,point,floor,range))))
+    }
+
+    fn draw_cached_terrain(&self,draw:&DrawListMut,point:[f32;3],floor:f32,range:f32,center:[f32;2],radius:f32,s:f32) {
+        if self.terrain_ready(point,floor,range) {
+            let key=self.terrain_image.unwrap();let origin=key.origin();
+            let uv=|screen:[f32;2]| {
+                let world=self.to_world(screen.map(|v|v*range/radius));
+                [(point[0]+world[0]-origin[0])/key.span(),1.-(point[2]+world[1]-origin[1])/key.span()]
+            };
+            for i in 0..DISC_SEGMENTS {
+                let rim=|i:usize| {let (sin,cos)=(TAU*i as f32/DISC_SEGMENTS as f32).sin_cos();[cos*(radius-s),sin*(radius-s)]};
+                let [a,b]=[rim(i),rim(i+1)];
+                let at=|p:[f32;2]|[center[0]+p[0],center[1]+p[1]];
+                draw.add_image_quad(self.terrain_texture.unwrap(),center,at(a),at(b),at(b))
+                    .uv(uv([0.,0.]),uv(a),uv(b),uv(b)).col(self.color([255;3],1.)).build();
+            }
+            if let Some(window)=&self.outdoor {
+                self.draw_scenery(draw,&window.map,point,floor,range,outdoor::HEIGHT_BAND,center,radius,s,
+                    self.outdoor_coverage.region.map(|r|(&**window,r)));
+            }
+        } else {
+            // Never draw a stale area or synchronously rebuild geometry on a game frame.
+            let disc:Vec<_>=(0..DISC_SEGMENTS).map(|i| {let angle=TAU*i as f32/DISC_SEGMENTS as f32;
+                [angle.cos()*(radius-s),angle.sin()*(radius-s)]}).collect();
+            self.paint_polygon(draw,&disc,point,radius/range,center,[192,171,130]);
+        }
     }
 
     fn select_dungeon(&mut self, block:[u8;4]) {
@@ -907,6 +1070,15 @@ impl ImguiRenderLoop for Minimap {
         if !self.last.as_ref().is_some_and(in_control) {
             return;
         }
+        if let Some(image)=self.terrain_baker.as_ref().and_then(|b|b.poll()) {
+            let uploaded=match self.terrain_texture {
+                Some(texture)=>render_context.replace_texture(texture,&image.rgba,crate::terrain_cache::SIZE as u32,crate::terrain_cache::SIZE as u32).is_ok(),
+                None=>match render_context.load_texture(&image.rgba,crate::terrain_cache::SIZE as u32,crate::terrain_cache::SIZE as u32) {
+                    Ok(texture)=>{self.terrain_texture=Some(texture);true},Err(_)=>false,
+                }
+            };
+            if uploaded {self.terrain_image=Some(image.key);}else{self.terrain_baker.as_mut().unwrap().retry();}
+        }
         let Some(window) = self.loader.poll() else {
             return;
         };
@@ -953,6 +1125,7 @@ impl ImguiRenderLoop for Minimap {
             if self.dungeon_active(snapshot) {
                 self.dungeon_floor.update(self.dungeon.as_ref().unwrap(),snapshot.local_position,ui.io().delta_time);
             } else {self.dungeon_floor.reset();}
+            self.request_terrain(snapshot);
         }
         // Characters turn instantly, so the arrow eases toward the facing in world space,
         // which keeps it from lagging behind camera turns.
@@ -1123,9 +1296,13 @@ impl Minimap {
             let window=self.outdoor.as_ref().unwrap();
             let point=outdoor::position(player);
             let floor=self.outdoor_floor.height().unwrap_or(point[1]);
-            self.draw_geometry(ui,&draw_list,&window.map,point,floor,ZOOM_RANGES[self.zoom],
-                outdoor::HEIGHT_BAND,View::Layered,outdoor::CONTEXT_EXTENT,center,radius,s,
-                self.outdoor_coverage.region.map(|region|(window,region)));
+            if self.config.parchment_maps && self.paper.is_some() {
+                self.draw_cached_terrain(&draw_list,point,floor,ZOOM_RANGES[self.zoom],center,radius,s);
+            } else {
+                self.draw_geometry(ui,&draw_list,&window.map,point,floor,ZOOM_RANGES[self.zoom],
+                    outdoor::HEIGHT_BAND,View::Layered,outdoor::CONTEXT_EXTENT,center,radius,s,
+                    self.outdoor_coverage.region.map(|region|(&**window,region)));
+            }
         }
         // Darken toward the rim so the frame sits on the map instead of cutting it.
         for i in 0..4 {
@@ -1199,7 +1376,9 @@ impl Minimap {
             let y=center[1]+frame_size*0.5+8.0*s;
             let mode=match self.outdoor_mode {outdoor::Mode::Auto=>"Auto",outdoor::Mode::Local=>"Local",outdoor::Mode::Surface=>"Surface"};
             let title=if outdoor_active {
-                if self.outdoor_coverage.active(outdoor::Mode::Auto) {"Below-surface terrain".to_owned()} else {"Local terrain".to_owned()}
+                let point=outdoor::position(player);let floor=self.outdoor_floor.height().unwrap_or(point[1]);
+                if self.config.parchment_maps && self.paper.is_some() && !self.terrain_ready(point,floor,ZOOM_RANGES[self.zoom]) {"Preparing local terrain".to_owned()}
+                else if self.outdoor_coverage.active(outdoor::Mode::Auto) {"Below-surface terrain".to_owned()} else {"Local terrain".to_owned()}
             } else if self.outdoor_mode==outdoor::Mode::Local {"Local layout unavailable".to_owned()} else {"Surface map".to_owned()};
             self.draw_text_centered(ui,&draw_list,[center[0],y],self.color(PALE_GOLD,1.0),&title);
             let hint=self.config.dungeon_floor_key.map_or_else(||mode.to_owned(),|key|format!("{mode} | {key:?}: change view"));
@@ -1459,10 +1638,10 @@ impl Minimap {
         center:[f32;2],radius:f32,s:f32,terrain:Option<(&outdoor::Window,usize)>) {
         let scale=radius/range;
         let mut occupied:Vec<[f32;2]>=Vec::new();
-        for feature in &map.scenery {
+        for (index,feature) in map.scenery.iter().enumerate() {
             let near=(feature.point[0]-position[0]).hypot(feature.point[2]-position[2]);
             if near>range {continue;}
-            let on_sheet=terrain.is_some_and(|(w,r)|w.marker_region(feature.point)==Some(r));
+            let on_sheet=terrain.is_some_and(|(w,r)|w.scenery_regions[index]==Some(r));
             if !on_sheet && (feature.point[1]-floor).abs()>band+3. {continue;}
             let offset=self.to_screen([feature.point[0]-position[0],feature.point[2]-position[2]]).map(|v|v*scale);
             let size=(feature.radius*scale).clamp(2.*s,6.*s);
@@ -1614,7 +1793,7 @@ impl Minimap {
 
     fn marker_layer(&self,point:[f32;3],floor:f32,band:f32,outdoor:bool)->Option<MarkerLayer> {
         if outdoor && self.outdoor.as_ref().is_some_and(|w|
-            self.outdoor_coverage.region.is_some_and(|r|w.marker_region(point)==Some(r))) {return Some(MarkerLayer::Current);}
+            self.outdoor_coverage.region.is_some_and(|r|w.cached_marker_region(point)==Some(r))) {return Some(MarkerLayer::Current);}
         let delta=point[1]-floor;
         if !outdoor && self.dungeon_view==View::Current && delta.abs()>band {return None;}
         let extent=if outdoor {outdoor::CONTEXT_EXTENT} else if self.dungeon_view==View::All {1_000_000.}else{8.0};
@@ -2018,7 +2197,7 @@ fn in_control(snapshot: &Snapshot) -> bool {
 }
 
 /// Intersect a sloping walkable triangle with an absolute-height plane.
-fn height_contour(points:[[f32;3];3],height:f32)->Option<[[f32;3];2]> {
+pub(crate) fn height_contour(points:[[f32;3];3],height:f32)->Option<[[f32;3];2]> {
     let min=points.iter().map(|p|p[1]).fold(f32::INFINITY,f32::min);
     let max=points.iter().map(|p|p[1]).fold(f32::NEG_INFINITY,f32::max);
     if max-min<0.6 {return None;}

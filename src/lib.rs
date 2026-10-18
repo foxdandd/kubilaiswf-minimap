@@ -8,6 +8,7 @@ mod game;
 mod maptiles;
 mod minimap;
 mod outdoor;
+mod terrain_cache;
 mod reader;
 
 use std::ffi::c_void;

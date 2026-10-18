@@ -90,9 +90,10 @@ impl Coverage {
         // Standing at a sparse cover edge must not alternate every few seconds.
         // Exit needs positive open support AND actual travel out of that area.
         if self.below && !target && near_anchor {self.timer=0.;return;}
-        // Open sky is normal on a lower riverbank. Retain the same connected
-        // ground until a substantial climb (or a different area) proves an exit.
-        if self.below && !target && same_area && self.covered_anchor.is_some_and(|p|point[1]<p[1]+48.) {
+        // A nearby open bank belongs to the lower area. Connectivity alone can
+        // span a whole lake: bound retention to 64 m from confirmed cover.
+        if self.below && !target && same_area && self.covered_anchor.is_some_and(|p|
+            point[1]<p[1]+48. && (p[0]-point[0]).hypot(p[2]-point[2])<64.) {
             self.timer=0.;return;
         }
         if target!=self.below {
@@ -105,14 +106,26 @@ impl Coverage {
 }
 
 pub struct Window {
+    pub id:u64,
     pub key:Key,pub name:String,pub map:DungeonMap,
     pub regions:Vec<usize>,pub boundary_regions:Vec<Option<usize>>,pub region_areas:Vec<f32>,
     pub land_regions:Vec<Option<usize>>,
     land_cells:HashMap<(i32,i32),Vec<usize>>,land_large:Vec<usize>,
     pub nav_water:Vec<bool>,
+    pub scenery_regions:Vec<Option<usize>>,
+    marker_regions:Mutex<HashMap<[u32;3],Option<usize>>>,
     cells:HashMap<(i32,i32),Vec<usize>>,
 }
 impl Window {
+    pub fn nav_candidates(&self,point:Point,range:f32)->Vec<usize> {
+        let mut candidates=Vec::new();
+        for x in ((point[0]-range)/32.).floor() as i32..=((point[0]+range)/32.).floor() as i32 {
+            for z in ((point[2]-range)/32.).floor() as i32..=((point[2]+range)/32.).floor() as i32 {
+                candidates.extend(self.cells.get(&(x,z)).into_iter().flatten().copied());
+            }
+        }
+        candidates.sort_unstable();candidates.dedup();candidates
+    }
     pub fn land_candidates(&self,point:Point,range:f32)->Vec<usize> {
         let mut candidates=self.land_large.clone();
         for x in ((point[0]-range)/32.).floor() as i32..=((point[0]+range)/32.).floor() as i32 {
@@ -174,6 +187,13 @@ impl Window {
             }
         }
         best.map(|v|v.1)
+    }
+
+    pub fn cached_marker_region(&self,point:Point)->Option<usize> {
+        let key=point.map(f32::to_bits);
+        if let Some(&region)=self.marker_regions.lock().unwrap().get(&key) {return region;}
+        let region=self.marker_region(point);let mut cache=self.marker_regions.lock().unwrap();
+        if cache.len()>=2048 {cache.clear();}cache.insert(key,region);region
     }
 
     fn nearby_overhead(&self,point:Point,region:Option<usize>)->Option<f32> {
@@ -314,7 +334,9 @@ fn index_window(key:Key,name:String,mut map:DungeonMap)->io::Result<Window> {
             cells.entry((x,z)).or_default().push(i);
         }}
     }
-    let mut window=Window {key,name,map,cells,regions,boundary_regions,region_areas,land_regions:vec![],land_cells:HashMap::new(),land_large:vec![],nav_water:vec![]};
+    static NEXT_ID:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(1);
+    let mut window=Window {id:NEXT_ID.fetch_add(1,std::sync::atomic::Ordering::Relaxed),key,name,map,cells,regions,boundary_regions,region_areas,land_regions:vec![],land_cells:HashMap::new(),land_large:vec![],nav_water:vec![],scenery_regions:vec![],marker_regions:Mutex::new(HashMap::new())};
+    window.scenery_regions=window.map.scenery.iter().map(|s|window.marker_region(s.point)).collect();
     let mut bindings=HashMap::new();
     window.land_regions=window.map.land.iter().map(|face| {
         let point:Point=std::array::from_fn(|i|face.points.iter().map(|p|p[i]).sum::<f32>()/3.);
@@ -363,6 +385,45 @@ mod tests {
     use super::*;
     fn plane(y:f32)->dungeon::Triangle {dungeon::Triangle {points:[[-10.,y,-10.],[10.,y,-10.],[0.,y,10.]],section:0}}
     #[test]
+    fn auto_releases_connected_open_ground_far_from_the_lower_zone() {
+        let face=|points|dungeon::Triangle {points,section:0};
+        let [a,b,c,d]=[[-200.,240.,-100.],[600.,240.,-100.],[600.,240.,100.],[-200.,240.,100.]];
+        let window=Window::from_map(DungeonMap {block:[60,35,42,0],triangles:vec![
+            face([a,b,c]),face([a,c,d]),plane(410.)],boundaries:vec![],ramps:vec![],scenery:vec![],land:vec![]});
+        let mut state=Coverage::default();for _ in 0..5 {state.update_window(&window,[0.,240.,0.],0.1);}
+        assert!(state.active(Mode::Auto));
+        for step in 1..=300 {state.update_window(&window,[step as f32,240.,0.],0.1);}
+        assert!(!state.active(Mode::Auto),"a connected lake must not inherit the village's lower map indefinitely");
+    }
+    #[test]
+    #[ignore="Requires OUTDOOR_NAV_TEST_DIR from the installed game"]
+    fn scenic_isle_lake_restores_surface_after_leaving_cover() {
+        let dir=std::env::var_os("OUTDOOR_NAV_TEST_DIR").unwrap();let dir=Path::new(&dir);
+        let catalog:HashMap<_,_>=std::fs::read_to_string(dir.join("maps.tsv")).unwrap().lines().skip(1)
+            .map(|l|{let (id,name)=l.split_once('\t').unwrap();(parse_id(id).unwrap(),name.to_owned())}).collect();
+        let window=load_window(dir,&catalog,[60,36,42,0]).unwrap();
+        let end=[9216.,window.map.floor_height([9216.,240.,10752.]),10752.];
+        let region=window.support_region(end,None).unwrap();
+        let start=window.map.triangles.iter().enumerate().step_by(13).find_map(|(i,t)| {
+            if window.regions[i]!=region {return None;}
+            let p:Point=std::array::from_fn(|a|t.points.iter().map(|p|p[a]).sum::<f32>()/3.);
+            (p[0]<9000. && (p[1]-end[1]).abs()<10. && window.broad_overhead(p)).then_some(p)
+        }).expect("covered ground connected to the Scenic Isle lake");
+        let mut state=Coverage::default();for _ in 0..10 {state.update_window(&window,start,0.1);}
+        assert!(state.active(Mode::Auto),"fixture must first enter the lower area");
+        let count=((start[0]-end[0]).hypot(start[2]-end[2])/1.).ceil() as usize;
+        for step in 1..=count {
+            let t=step as f32/count as f32;
+            let mut p:Point=std::array::from_fn(|a|start[a]+(end[a]-start[a])*t);
+            p[1]=window.map.floor_height(p);state.update_window(&window,p,0.1);
+        }
+        for _ in 0..60 {state.update_window(&window,end,0.1);}
+        println!("Scenic Isle replay: start={start:?}, end={end:?}, {count} steps, Auto local={}",state.active(Mode::Auto));
+        assert!(!state.active(Mode::Auto),"reported open lake retained the lower map");
+        let mut cold=Coverage::default();for _ in 0..20 {cold.update_window(&window,end,0.1);}
+        assert!(!cold.active(Mode::Auto),"open lake must also stay Surface on first load");
+    }
+    #[test]
     fn open_ground_under_a_narrow_bridge_does_not_enable_auto() {
         let mut bridge=plane(270.);for p in &mut bridge.points {p[0]*=0.08;}
         let window=Window::from_map(DungeonMap {block:[61,48,41,0],triangles:vec![plane(240.),bridge],boundaries:vec![],ramps:vec![],scenery:vec![],land:vec![]});
@@ -382,20 +443,20 @@ mod tests {
     #[test]
     fn walking_into_open_sky_on_the_same_lower_ground_keeps_the_area() {
         let face=|points|dungeon::Triangle {points,section:0};
-        let [a,b,c,d]=[[-200.,240.,-100.],[120.,240.,-100.],[120.,240.,100.],[-200.,240.,100.]];
-        let [e,f]=[[220.,320.,-100.],[220.,320.,100.]];
+        let [a,b,c,d]=[[-200.,240.,-100.],[60.,240.,-100.],[60.,240.,100.],[-200.,240.,100.]];
+        let [e,f]=[[160.,320.,-100.],[160.,320.,100.]];
         let window=Window::from_map(DungeonMap {block:[61,45,47,0],triangles:vec![
             face([a,b,c]),face([a,c,d]),face([b,e,f]),face([b,f,c]),plane(410.)],boundaries:vec![],ramps:vec![],scenery:vec![],land:vec![]});
         let mut state=Coverage::default();for _ in 0..5 {state.update_window(&window,[0.,240.,0.],0.1);}
         assert!(state.active(Mode::Auto));let region=state.region;
-        for step in 1..=100 {
+        for step in 1..=60 {
             state.update_window(&window,[step as f32,240.,0.],0.1);
             assert_eq!(state.region,region);
             assert!(state.active(Mode::Auto),"open sky within the same lower area caused a surface flash");
         }
         // A sustained climb out of that lower area can still return to surface.
-        for x in 101..=220 {
-            let y=240.+(x as f32-120.).max(0.)*0.8;
+        for x in 61..=160 {
+            let y=240.+(x as f32-60.)*0.8;
             state.update_window(&window,[x as f32,y,0.],0.1);
         }
         assert!(!state.active(Mode::Auto),"climbing to the upper area must release the lower-area latch");

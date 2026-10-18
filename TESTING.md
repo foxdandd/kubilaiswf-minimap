@@ -1,4 +1,4 @@
-# Dungeon and terrain minimap pilot 9 — upstream 0.5.0
+# Dungeon and terrain minimap pilot 10 — upstream 0.5.0
 
 Local test based on kubilaiswf's MIT-licensed Minimap, upstream v0.5.0 commit
 5ae48a5522df02f896965145038cfd6c073d6f4c. Preserve LICENSE and the included
@@ -6,19 +6,48 @@ THIRD-PARTY-NOTICES.txt for Map for Goblins DLL's imported icon atlas.
 
 ## Current behavior and checks
 
-All 50 tests passed with local game data. This includes 719 outdoor navigation
+55 checks passed with local game data. Coverage includes 719 outdoor navigation
 files, 60 dungeon layouts / 1,080 frames, 1,681 DLC cells, 1,005 walking samples
-(Village 550 / Ellac 181 / Rauh 274), and 33 sparse-overhead samples in the reported
-m61_45_47 and m61_48_41 tiles. Three targeted checks reproduced unwanted switching
-before their fixes: narrow overhead, an edge gap, and walking into open sky while
-remaining on the same lower ground. A sustained climb can still leave that area.
+(Village 550 / Ellac 181 / Rauh 274), and 33 sparse-overhead samples in the earlier
+reported DLC tiles. The optional real-marker CSV test was not rerun because its
+private fixture was absent; synthetic marker/coordinate checks passed.
 
-Auto entry needs overhead at the player plus coverage at five of nine probes
-across an 8 m footprint. Existing support/warp checks remain. Open sky on the same
-connected lower sheet now retains Local until a supported climb of 48 m above
-the last confirmed covered anchor, or a different supported area, supplies exit
-evidence. An exit also needs travel beyond the 18 m edge margin and 2 s of open
-support. Geometry indices remap across tile refreshes. F8 Surface stays immediate.
+The reported Auto error was reproduced using the real m60_36_42_00 window:
+271 steps from covered ground near the plateau to the Scenic Isle lake retained
+Local indefinitely. Connectivity spanned both areas. A smaller synthetic case
+also failed before the fix. Auto now retains connected open ground only within
+64 m of the last confirmed covered point, with the existing 48 m climb limit.
+Outside that margin, 2 seconds of supported open ground restores Surface.
+Nearby edge gaps, navigation holes and the existing Village/DLC walking checks
+remain stable. Auto entry still needs five of nine overhead probes across 8 m.
+This is a conservative geometric heuristic, not a verified atlas-area boundary.
+Use F8 Local or Surface when an untested area needs manual selection.
+
+Outdoor parchment terrain is rasterized on one background worker into a 1024 px
+world-aligned image. A patch covers four times the zoom radius. Cached drawing
+keeps ground shading, contours and water; scenery and game-visible markers remain
+dynamic. Scenery floor bindings are prepared on the loader, and marker bindings
+are cached per window. Camera turns do not rebuild terrain. Movement/zoom/floor
+changes request a new patch when needed; pending patches keep a valid old image.
+A new area never reuses the wrong window/region or rebuilds its mesh on the game
+frame. It briefly shows "Preparing local terrain" if no valid image is ready.
+Superseded work is cancelled. One GPU texture is reused across zoom/area changes;
+uploads remain blocked during loading screens. Dungeon rendering is unchanged.
+
+Measured in an isolated CPU-only drawing loop, with the same Scenic Isle fixture:
+
+| Zoom radius | Earlier median | Cached median | Earlier vertices | Cached vertices |
+| --- | --- | --- | --- | --- |
+| 40 m | 2.847 ms | 0.015 ms | 17,066 | 1,018 |
+| 80 m | 8.929 ms | 0.036 ms | 62,440 | 3,460 |
+| 160 m | 30.415 ms | 0.146 ms | 247,900 | 10,276 |
+
+Background image preparation took 38–59 ms for those three patches. These costs
+exclude GPU upload/rendering, the complete HUD and other mods. They are not an
+in-game FPS measurement. Tests limit repeated-frame geometry, check cache reuse
+through movement/rotation, latest-request selection, region/window/height guards,
+texture replacement and the loading-screen upload guard. Physical ground remains
+available beyond AI navigation.
 
 The source carries upstream 0.5.0's co-op arrows, native Map for Goblins DLL icons,
 Stormveil conversion fix and new default keys. Direct world references take
@@ -47,9 +76,10 @@ extent can be incomplete. No original geographic artwork is embedded in the DLL.
 All 779 sidecar pairs decode with their own block identity. Invalid/missing optional
 sidecars leave the navigation layout usable.
 
-The pilot 9 update requires an existing navigation installation. Replace the DLL,
-copy matching dungeons/ and outdoor/ sidecars into those existing directories,
-and retain the INI, .nav files and profiles. Include the notes, LICENSE and
+The pilot 10 update requires an existing navigation installation. Over pilot 9,
+replace only the DLL and these notes; existing .land/.scenery files work unchanged.
+Earlier installations may copy matching pilot 9 sidecars into their existing
+dungeons/ and outdoor/ directories. Retain the INI, .nav files and profiles. Include the notes, LICENSE and
 THIRD-PARTY-NOTICES.txt. The new DLL also works without the optional sidecars.
 
 To reproduce from your own navigation/MSB exports, prepare scenery with
