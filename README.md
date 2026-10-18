@@ -8,21 +8,22 @@ The public source on `main` includes layouts for **60 small-dungeon map areas** 
 
 Dungeon layouts load in the background. They come from AI navigation surfaces: they describe walkable geometry, not verified room boundaries or physical walls. The count is 60 map areas, not 60 confirmed distinct dungeons. One unnamed forge is identified by its map ID.
 
-## Latest local test: pilot 9, based on upstream 0.5.0
+## Latest local test: pilot 10, based on upstream 0.5.0
 
-**Pilot 9 is a local test build. Its latest source and game-derived data have not been published to GitHub.** The public development branch also predates it. Cloning this repository currently gives the public baseline described above.
+**Pilot 10 is a local test build. Its latest source and game-derived data have not been published to GitHub.** The public development branch also predates it. Cloning this repository currently gives the public baseline described above.
 
 The local source now carries the runtime changes from [upstream v0.5.0](https://github.com/kubilaiswf/kubilaiswf-minimap/releases/tag/v0.5.0), commit `5ae48a5`: co-op partner arrows, Map for Goblins DLL icons, the Stormveil/world-reference conversion fix and the new F7/F8 defaults. The fork retains DLC coordinate support and accumulates height through chained dungeon conversions. Its installed test profile keeps F6/F7/F8. Local partner arrows use the dungeon scale and suppress distant floors.
 
 The local test also adds:
 
-- Below-surface layouts from 719 base-game/DLC navigation tile variants. Auto requires broad overhead coverage, so a narrow strip does not replace the normal outdoor map. Once selected, connected lower ground stays local through open sky. A different area or a sustained climb can release it; F8 Surface remains immediate.
+- Below-surface layouts from 719 base-game/DLC navigation tile variants. Auto requires broad overhead coverage and keeps nearby gaps stable. Retention on connected open ground is limited to 64 m from confirmed cover; after leaving that margin, 2 seconds of supported open ground restores Surface. This fixes the reproduced Scenic Isle lake case. F8 Local and Surface remain available for areas where the heuristic needs manual selection.
+- Outdoor terrain is prepared as a cached image on a background worker. Walking and camera turns reuse it; the game draws a small texture disc instead of rebuilding the physical mesh every frame. Stale areas are rejected, zoom replaces one texture, and loading screens do not upload images. A short “Preparing local terrain” message can appear during a new patch.
 - A geographic drawing layer from physical map-piece geometry, rather than navigation edges alone: parchment ground, shaded landforms, height contours and muted water. Recorded object placements supply engraved tree, rock and structure symbols. Navigation remains the source for floor selection, missing physical ground and the shallow-water mask.
 - Height-aware entrances, landmarks and discovered graces. Nearby other-level markers are dimmed with up/down signs; distant levels are hidden. Outdoor player pins have a `?` badge because their height is unknown.
 
 The private export has physical surfaces for 671 outdoor tile variants and 48 small-dungeon areas, plus scenery sidecars for all 779 supported navigation entries. Other entries retain the navigation drawing. This is a procedural cartographic rendering of available geometry, not a complete hand-painted atlas. Asset-built architecture, deep-water boundaries and unlabelled scenery can be incomplete; changing doors, lifts and traps are not tracked.
 
-**Validation:** all 50 local tests passed, including 719 outdoor files, 60 dungeon layouts / 1,080 frames, 1,681 DLC cells, 1,005 lower-area walking samples, 33 sparse-overhead samples from the two reported DLC tiles, and real marker fixtures at Albinauric Village, Fog Rift and Tombsward. The checks also cover the upstream coordinate fix, icon atlas bounds, local co-op projection and existing INI controls. Character-loaded walking, multiplayer sessions and full gameplay performance remain to test.
+**Validation:** 55 local checks passed, including the real Scenic Isle exit replay, existing Village/DLC stability traces, terrain caching, texture reuse, loading-screen upload protection and the prior data/render checks. In the isolated Scenic Isle CPU drawing benchmark at the widest zoom, median cost fell from 30.4 ms to 0.15 ms; vertices fell from 247,900 to 10,276. Preparing that image took about 59 ms on the worker. These figures exclude GPU upload/rendering and other mods, and are not gameplay FPS. The optional exported-marker CSV test was not rerun because its private fixture was absent; synthetic marker checks passed. Character-loaded walking and multiplayer remain to test.
 
 Original code-drawn map symbols and imported Map for Goblins DLL icons follow game visibility/discovery flags. No save flags are changed. The icon credits and licenses are retained in the package's third-party notices, copied from [upstream](https://github.com/kubilaiswf/kubilaiswf-minimap/blob/v0.5.0/package/THIRD-PARTY-NOTICES.txt).
 
@@ -58,7 +59,7 @@ pwsh -NoProfile -File .\tools\build-pilot.ps1 `
 
 The package contains `tombsward-minimap-test.dll`, `minimap.ini`, dungeon data and a separate `dungeon-test.me3` profile. The DLL retains its early test filename. `-WorldMapGameRoot` enables real-game DLC tile tests and is optional. GNU Windows builds need an ASCII toolchain/build path; the script accepts `-CargoHome`, `-RustupHome`, `-GccBin` and `-BuildRoot`.
 
-See [TESTING.md](TESTING.md) for the checks and preparation supported by the public source. Pilot 9's outdoor/cartography tools and new rendering are pending source publication.
+See [TESTING.md](TESTING.md) for the checks and preparation supported by the public source. Pilot 10's outdoor/cartography tools and new rendering are pending source publication.
 
 ## Use with an existing ME3 profile
 
@@ -85,7 +86,7 @@ The defaults below apply to the local 0.5.0 pilot. The current public baseline u
 | Change zoom | F8 |
 | Cycle layered / current / all floors | F11 |
 
-The existing local test installation uses **F6 / F7 / F8** instead. In pilot 9, outdoors F8 cycles **Auto / Local / Surface**. Inside supported dungeons it cycles the floor views. Updating that installation preserves its INI and navigation data.
+The existing local test installation uses **F6 / F7 / F8** instead. In pilot 10, outdoors F8 cycles **Auto / Local / Surface**. Inside supported dungeons it cycles the floor views. Updating that installation preserves its INI and navigation data.
 
 Settings are read from `minimap.ini` beside the DLL at startup. Restart after changing them.
 
