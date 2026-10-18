@@ -1,32 +1,39 @@
-# kubilaiswf's Minimap - Rotating Map Overlay (Map for Goblins Compatible) + Dungeon Layouts & Shadow of the Erdtree Map
+# Elden Ring Minimap — dungeons and Shadow of the Erdtree
 
-An enhanced fork of [kubilaiswf's Minimap](https://github.com/kubilaiswf/kubilaiswf-minimap). It keeps the original rotating map overlay and Map for Goblins compatibility, and adds navigation layouts for **60 small-dungeon map areas**, floor height cues, and the **Shadow of the Erdtree outdoor map**.
+An enhanced fork of [kubilaiswf's Minimap](https://github.com/kubilaiswf/kubilaiswf-minimap). It keeps the rotating circular map and Map for Goblins compatibility, and adds small-dungeon layouts and the Shadow of the Erdtree outdoor map.
 
-These additions are carried on `main`. The original project's releases do not include them.
+## Available on GitHub
 
-## What this fork adds
+The public source on `main` includes layouts for **60 small-dungeon map areas** (48 base-game and 12 DLC areas), floor-height colours and slope hints, and the DLC outdoor world map with graces, map points and numbered beacons. The original project's releases do not include these additions.
 
-| Feature | Current coverage |
-| --- | --- |
-| Small-dungeon layouts | 48 base-game and 12 DLC map areas, loaded automatically when you enter them |
-| Floor height display | Gold for the current level, dim blue for paths above, dim brown for paths below |
-| Slope hints | Direction arrows and signed height differences, such as `+5 m` or `-3 m` |
-| Shadow of the Erdtree | Outdoor terrain read from the installed game, with DLC graces, map points and numbered beacons |
+Dungeon layouts load in the background. They come from AI navigation surfaces: they describe walkable geometry, not verified room boundaries or physical walls. The count is 60 map areas, not 60 confirmed distinct dungeons. One unnamed forge is identified by its map ID.
 
-Dungeon maps load in the background. The display clears the old layout when you change areas, smooths floor selection on stairs, and reduces overlapping labels.
+## Latest local test: pilot 8
 
-The original circular frame, camera rotation, outdoor trail, discovered graces and map points remain available. World-map terrain is fully revealed on the minimap; this does not grant map fragments or change discovery flags in your save.
+**Pilot 8 is a local test build. Its latest source and packaged data have not been published to GitHub.** The public development branch also predates these changes. Cloning this repository currently gives the public baseline described above.
 
-The dungeon layouts come from AI navigation surfaces. They show walkable geometry, **not verified room boundaries or physical walls**. The count is 60 map areas, not 60 confirmed distinct dungeons; one forge area has no name and is shown by its map ID.
+The local test adds:
+
+- Below-surface outdoor layouts from 719 locally generated base-game/DLC navigation tile variants, including terrain hidden below the ordinary map artwork.
+- Stable connected terrain around Albinauric Village and layered DLC areas. A continuous hillside stays one current area; Auto holds the local view through short support or overhead gaps to reduce surface-map flashes.
+- Original-map-inspired parchment shading: bright current ground, lighter raised edges and a small shadow for upper areas, soft dark shading for lower areas. Outdoor captions stay stable while walking on slopes.
+- Height-aware entrance, landmark and discovered-grace symbols. Entrances use arches, tunnels, gaols or forge symbols; landmarks include churches, towers, villages, trees, bridges and crosses. Nearby other-level markers are dimmed with an up/down sign; distant levels are hidden.
+- Outdoor player pins with a `?` badge because the world-map save has no pin height. Their floor is unknown.
+
+Symbols are drawn in code by category; they are not bundled copies of the game's icon atlas. Game visibility and grace-discovery flags still apply, and no save flags are changed. Overlapping symbols are reduced, with entrances taking priority.
+
+**Validation:** all 39 local automated tests passed, including all 719 outdoor files, 60 dungeon layouts, 1,080 rendered dungeon frames, 1,681 DLC map tiles, 864 walking-replay samples and marker placement fixtures for Albinauric Village, Fog Rift and Tombsward. These are offline checks. Character-loaded alignment, transitions and performance with other overlays still need gameplay testing.
+
+The private update requires the existing local navigation data. Extracted game data, saves, local paths and test packages are not uploaded here. Unsupported areas fall back to the normal map. Large legacy-dungeon interiors, changing doors/lifts/traps and a complete hand-painted underground atlas are not included.
 
 ## Requirements
 
 - Elden Ring 1.17.1, executable version **2.7.1.0**. The DLL disables itself on other executable versions.
 - [ME3](https://github.com/garyttierney/me3), using an offline profile.
-- Your own installed game files. DLC access requires Shadow of the Erdtree.
-- Locally generated navigation data for the optional dungeon layouts.
+- Your own installed game files. DLC content requires Shadow of the Erdtree.
+- Locally generated navigation data for dungeon layouts.
 
-## Build from source
+## Build the public source
 
 ```powershell
 git clone https://github.com/foxdandd/kubilaiswf-minimap.git
@@ -35,13 +42,9 @@ cargo build --release --locked
 cargo test --release --lib --locked
 ```
 
-The DLL is written to `target/release/kubilaiswf_minimap.dll`. Base-game and DLC world-map textures are read directly from your install; they need no separate map download. Tests that require local game data are ignored by the basic test command.
+The DLL is written to `target/release/kubilaiswf_minimap.dll`. Base-game and DLC world-map textures are read from your installation. Tests needing local game data are ignored by the basic test command.
 
-### Optional dungeon test package
-
-The dungeon generator currently requires existing SoulsFormats/HKLib navigation exports. It cannot yet create the dungeon data directly from a raw game install, and the earlier navigation exporter is not included in this fork.
-
-With those exports available, use Python and PowerShell to build the test package:
+The dungeon generator requires existing SoulsFormats/HKLib navigation exports. It cannot yet create dungeon data directly from a raw game install; the earlier exporter is not included. With those exports available:
 
 ```powershell
 pwsh -NoProfile -File .\tools\build-pilot.ps1 `
@@ -51,50 +54,36 @@ pwsh -NoProfile -File .\tools\build-pilot.ps1 `
   -WorldMapGameRoot 'C:\path\to\ELDEN RING\Game'
 ```
 
-The package contains `tombsward-minimap-test.dll`, `minimap.ini`, the `dungeons` directory and an isolated `dungeon-test.me3` profile. The DLL keeps its earlier test filename even though it now supports more areas.
+The package contains `tombsward-minimap-test.dll`, `minimap.ini`, dungeon data and a separate `dungeon-test.me3` profile. The DLL retains its early test filename. `-WorldMapGameRoot` enables real-game DLC tile tests and is optional. GNU Windows builds need an ASCII toolchain/build path; the script accepts `-CargoHome`, `-RustupHome`, `-GccBin` and `-BuildRoot`.
 
-`-WorldMapGameRoot` enables the real-game DLC tile tests. It is optional when building. GNU Windows builds need an ASCII toolchain/build path; the script accepts `-CargoHome`, `-RustupHome`, `-GccBin` and `-BuildRoot` for this setup.
-
-See [TESTING.md](TESTING.md) for data preparation, build options and gameplay checks. Generated navigation files and test archives are kept local and are not committed to this repository.
+See [TESTING.md](TESTING.md) for the checks and preparation supported by the public source. Pilot 8's outdoor tools and new rendering are pending source publication.
 
 ## Use with an existing ME3 profile
 
-1. Exit the game and place the built DLL in its own mod folder.
-2. Keep `minimap.ini` next to the DLL. For dungeon layouts, also copy the complete `dungeons` directory there and set `dungeon_mode = true`.
-3. Add one native entry to your existing `.me3` profile, keeping its current mods and save settings.
+1. Exit the game and put the built DLL in its own mod folder.
+2. Keep `minimap.ini` next to the DLL. For dungeon layouts, copy the complete `dungeons` directory there and set `dungeon_mode = true`.
+3. Add one native entry to your existing profile, keeping its other mods and save settings.
 
-For a built test package copied to `natives/DungeonMinimap`:
+For a test package copied to `natives/DungeonMinimap`:
 
 ```toml
 [[natives]]
 path = 'natives/DungeonMinimap/tombsward-minimap-test.dll'
 ```
 
-For a plain Cargo build, use the actual filename `kubilaiswf_minimap.dll` instead. Load one minimap DLL per profile and keep the profile offline with `start_online = false`.
+For a plain Cargo build, use `kubilaiswf_minimap.dll`. Load one minimap DLL per profile and keep `start_online = false`. The separate test profile is an alternative for isolated testing; ME3 may copy the normal save on first use, so this does not automatically create a fresh character.
 
-The package's separate `dungeon-test.me3` is an alternative for isolated testing. It uses `ER0000_MINIMAP_TOMBSWARD_TEST.mod`; ME3 copies the normal save on first use, so this does not automatically create a fresh character.
-
-## Controls
+## Controls and settings
 
 | Action | Default key |
 | --- | --- |
 | Show or hide the minimap | F9 |
 | Change zoom | F10 |
-| Cycle layered / current level / all levels | F11 |
+| Cycle layered / current / all floors | F11 |
 
-Outdoor zoom uses a 40 / 80 / 160 m radius. Supported dungeon layouts use 15 / 30 / 60 m. Floor view starts in layered mode, with nearby upper and lower paths visible within 8 m vertically.
+The existing local test installation uses **F6 / F7 / F8** instead. In pilot 8, outdoors F8 cycles **Auto / Local / Surface**. Inside supported dungeons it cycles the floor views. Updating that installation preserves its INI and navigation data.
 
-If other mods already use F9-F11, you can use this alternative in `minimap.ini`:
-
-```ini
-toggle_key = F6
-zoom_key = F7
-dungeon_floor_key = F8
-```
-
-## Settings
-
-Settings are read from `minimap.ini` next to the DLL at game startup. Restart after changing them.
+Settings are read from `minimap.ini` beside the DLL at startup. Restart after changing them.
 
 ```ini
 trail = true
@@ -111,26 +100,13 @@ dungeon_height_band = 2.0
 dungeon_floor_key = F11
 ```
 
-- `rotate = false` keeps north up.
-- `size` accepts 0.5-2.5; `margin` is measured in pixels at 1080p.
-- `dungeon_mode = true` enables supported layouts when local data is present. The test package enables it by default.
-- `dungeon_height_band` sets the metres above and below the selected floor to highlight in gold; accepts 0.5-5.0, default 2 m.
-- `hide_in_caves` still applies when no supported dungeon layout is active.
+`rotate = false` keeps north up. `size` accepts 0.5–2.5; `margin` is in pixels at 1080p. The dungeon height band accepts 0.5–5.0 metres. Outdoor zoom radii are 40 / 80 / 160 m; dungeon radii are 15 / 30 / 60 m. The local pilot also supports `parchment_maps` and `outdoor_layers`, both enabled by default when absent from an older INI.
 
-## Test status and limits
+## Known limits and startup compatibility
 
-Pilot 4 passed **21 automated tests** using local game data. This included decoding **1,681 DLC map tiles**, switching between DLC and base-game tile windows, and drawing **1,080 dungeon frames** across the 60 map areas, sampled heights, views and zoom levels.
+Navigation data follows vanilla layouts; overhaul mods may change them. AI walkable surfaces can differ from paths a player can reach. World-map terrain is fully revealed on the minimap; this does not grant map fragments or change discovery flags. [Map for Goblins](https://www.nexusmods.com/eldenring/mods/3091) points retain their game's visibility rules.
 
-Gameplay verification is still incomplete. DLC alignment, marker placement, floor hints and performance with other overlays need in-game checks.
-
-If the game closes or freezes at startup with QuestPath enabled, set `renderer = window` under `[overlay_render]` in `QuestPath.ini`, then restart. This uses QuestPath's supported separate-window renderer. The local combined profile passed a 60-second game-window response check with this setting and the unchanged pilot 4 minimap DLL. This is a configuration workaround, not a general fix for graphics-hook conflicts. See [the startup regression check](https://github.com/foxdandd/kubilaiswf-minimap/blob/codex/tombsward-pilot/TESTING.md#questpath-startup-regression); character loading and overlay appearance still need gameplay testing.
-
-- Detailed interior layouts for large legacy dungeons are not included. Where available, those areas use the ordinary world-map view.
-- Doors, lifts, traps and other changing geometry are not tracked.
-- AI navigation surfaces can differ from paths the player can reach.
-- Dungeon icons and trails are not yet drawn in the detailed layout view.
-- Navigation data is based on vanilla layouts; overhaul mods may change them.
-- World-map icons, including [Map for Goblins](https://www.nexusmods.com/eldenring/mods/3091) points, use simple shapes.
+If startup closes or freezes with QuestPath enabled, set `renderer = window` under `[overlay_render]` in its INI and restart. This supported separate-window renderer passed a previous 60-second combined-profile game-window check. It is a local compatibility workaround; character loading and overlay appearance still require gameplay testing.
 
 ## Credits and license
 
