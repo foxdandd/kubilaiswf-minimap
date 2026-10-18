@@ -113,6 +113,27 @@ impl Window {
         }
     }
 
+    /// Map symbols may sit inside a building or just outside AI walkable polygons.
+    /// Attach only to a nearby sheet at a matching height, never the roof above it.
+    pub fn marker_region(&self,point:Point)->Option<usize> {
+        if let Some(region)=self.support_region(point,None) {return Some(region);}
+        let mut best=None::<(f32,usize)>;
+        for x in ((point[0]-12.)/32.).floor() as i32..=((point[0]+12.)/32.).floor() as i32 {
+            for z in ((point[2]-12.)/32.).floor() as i32..=((point[2]+12.)/32.).floor() as i32 {
+                for &i in self.cells.get(&(x,z)).into_iter().flatten() {
+                    let triangle=self.map.triangles[i].points;let nearest=nearest_xz(triangle,[point[0],point[2]]);
+                    let distance=(nearest[0]-point[0]).hypot(nearest[1]-point[2]);
+                    if distance>12. {continue;}
+                    let Some(height)=dungeon::height_at(triangle,nearest) else {continue;};
+                    if (height-point[1]).abs()>8. {continue;}
+                    let score=distance+(height-point[1]).abs();
+                    if best.is_none_or(|old|score<old.0) {best=Some((score,self.regions[i]));}
+                }
+            }
+        }
+        best.map(|v|v.1)
+    }
+
     fn nearby_overhead(&self,point:Point,region:Option<usize>)->Option<f32> {
         let mut above=None::<f32>;
         for x in ((point[0]-12.)/32.).floor() as i32..=((point[0]+12.)/32.).floor() as i32 {

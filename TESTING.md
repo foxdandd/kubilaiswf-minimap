@@ -1,9 +1,50 @@
-# Dungeon and height-aware outdoor minimap pilot 7
+# Dungeon and height-aware outdoor minimap pilot 8
 
 Local test build based on kubilaiswf's MIT-licensed Minimap, upstream commit
 ff2b9e4ce7b71ddcb503acd202081953183173aa. Keep the original copyright and LICENSE.
 
+## Current validation
+
+All 39 pilot 8 tests passed using local game data: 719 outdoor files, 60 dungeon
+layouts / 1,080 frames, 1,681 DLC tile cells and 864 walking-replay samples.
+Marker fixtures cover Albinauric Village, Fog Rift and Tombsward. The preview
+uses the real renderer with offline fixture placement, not a gameplay capture.
+Character-loaded marker alignment, transitions and performance remain to test.
+The pilot 8 source and package remain local; the GitHub README describes this
+unpublished test separately from the public source baseline.
+
 ## What to test
+
+Pilot 8 replaces blue upper-floor fills with warm parchment relief: lighter
+raised edges and a small offset shadow above, softer dark shading below. Current
+ground stays bright. The selected connected outdoor terrain and Auto stability
+rules from pilot 7 remain in use. Dungeon current/all-level controls still apply.
+
+Local layouts now show game-visible map points and discovered graces. Retained
+raw XYZ and block identity place indoor points in their own dungeon; outdoor
+points use world XZ and the game's Y reference conversion, including DLC dungeons.
+Nearby markers on other levels are dimmed with an up/down sign. Distant levels
+are omitted, so Moonlight Altar icons do not appear as village-floor destinations.
+The selected connected outdoor sheet keeps its own hillside landmarks current.
+Markers inside buildings can attach to matching-height navigation within 12 m.
+
+Entrance arches distinguish caves/catacombs, tunnels, gaols and forges. Landmark
+families include churches, villages, towers, ruins, trees, bridges and crosses.
+These are original code-drawn category symbols inspired by the map style, rather
+than bundled copies of the game's icon atlas. DLC icon IDs 200-299 are treated as
+map landmarks; 230-232 and 234 are entrances. Original map visibility/text flags
+and grace discovery flags still control which points are supplied in live play.
+Cleared points stay dimmed. Markers are decluttered and entrances take priority
+over overlapping symbols; up to 24 can be drawn within the circular frame.
+
+Outdoor player pins are restored as hollow numbered markers with a ? badge:
+the world-map save has no height for these pins, so their floor is unknown.
+Dungeon layouts omit world-map pins because their coordinate space is different.
+The vanilla data has no outdoor conversion for one unused DLC forge block;
+its marker is not assigned a guessed outdoor position. Normal surface-map points
+also use the new landmark/entrance symbol families. No save flags are changed.
+Update an existing pilot by replacing the DLL; keep the INI and navigation files.
+The private pilot 8 update contains the DLL, notes, license and checksums.
 
 Pilot 7 fixes outdoor area consistency. The selected connected 3D terrain sheet
 is drawn as one current layer, including its hillsides. It is no longer cut away
@@ -219,6 +260,23 @@ The game can update the profile's save during startup. Loading a character and
 checking visible overlays still require a separate gameplay test.
 
 ## Build and data
+
+Pilot 8 adds checks for coordinate-space separation, missing/nonfinite marker
+heights, base/DLC entrance icon grouping, marker layers on connected hillsides,
+far-plateau exclusion, duplicate graces, unknown pin height and symbol clipping.
+An optional local fixture uses 894 vanilla map/grace parameter rows with XYZ and
+nearest legacy reference conversions, including 11 projectable DLC small-dungeon
+entrance rows. It checks and previews Village, Fog Rift entrance and Tombsward
+placements. Offline examples include placement samples regardless of discovery;
+the live mod continues to use game visibility flags. Character-loaded placement,
+discovery changes and icon readability still require a gameplay check.
+
+Set `MINIMAP_MARKER_TEST_CSV` only for that optional marker fixture test. CSV
+columns are param,id,area,gx,gz,x,y,z,icon,worldArea,worldX,worldY,worldZ. Data comes
+from WorldMapPointParam/BonfireWarpParam and WorldMapLegacyConvParam in the user's
+own regulation. It is not committed. The build script skips this test when the
+CSV or outdoor navigation is absent. Use `--features` with render-preview.py for
+the mixed shadow/symbol/real-placement preview sheet.
 
 Pilot 7 passed all 34 tests with local fixtures, retaining the 60-dungeon/1,080-frame
 and 1,681-DLC-map-cell checks. Regression checks reproduce the old immediate surface flashes on missing

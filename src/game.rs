@@ -32,15 +32,16 @@ pub struct Snapshot {
     pub boss_fight: bool,
     /// Catacombs (m30), caves (m31) and tunnels (m32), which have no map of their own.
     pub in_cave: bool,
-    pub graces: Vec<[f32; 2]>,
+    pub graces: Vec<MapLocation>,
     pub beacons: Vec<Beacon>,
     /// Includes whatever map mods like Map for Goblins add.
     pub points: Vec<MapPoint>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq,Debug)]
 pub enum PointKind {
     Landmark,
+    DungeonEntrance,
     Npc,
     Invasion,
     Boss,
@@ -53,9 +54,37 @@ pub enum PointKind {
 #[derive(Clone, Copy)]
 pub struct MapPoint {
     pub kind: PointKind,
-    pub position: [f32; 2],
+    pub location: MapLocation,
+    pub icon: u16,
     /// Defeated bosses and the like, which the game marks as done.
     pub cleared: bool,
+}
+
+/// Retain raw XYZ alongside world-map XZ; a map projection alone has no floor.
+#[derive(Clone, Copy)]
+pub struct MapLocation {
+    pub position:[f32;2],
+    pub block_id:[u8;4],
+    pub local_position:[f32;3],
+    pub world_area:Option<u8>,
+    pub world_height:Option<f32>,
+}
+impl MapLocation {
+    pub fn on_local_map(&self,player:&Snapshot)->Option<[f32;3]> {
+        let point=if matches!(player.block_id[0],60|61) && self.world_area==Some(player.block_id[0]) {
+            [self.position[0],self.world_height?,self.position[1]]
+        } else if self.block_id==player.block_id {self.local_position} else {return None;};
+        point.iter().all(|v|v.is_finite()).then_some(point)
+    }
+}
+
+fn marker_location(block:BlockId,local:[f32;3],position:[f32;2])->MapLocation {
+    let (world_area,world_height)=if matches!(block.area(),60|61) {(Some(block.area()),Some(local[1]))} else {
+        legacy_conversion(block,[local[0],local[2]]).map_or((None,None),|c|
+            (Some(c.dst_area),Some(local[1]+c.height_offset)))
+    };
+    MapLocation {position,block_id:[block.area(),block.block(),block.region(),block.index()],local_position:local,
+        world_area,world_height}
 }
 
 /// A beacon placed on the world map, numbered like the game numbers it.
@@ -169,6 +198,14 @@ mod map_location_tests {
     use super::*;
 
     #[test]
+    fn entrance_and_dlc_map_icons_are_not_item_pickups() {
+        for id in [4,13,14,16,89,90,230,231,232,234] {assert_eq!(point_kind(id),Some(PointKind::DungeonEntrance));}
+        for id in [3,20,39,208,210,247,261] {assert_eq!(point_kind(id),Some(PointKind::Landmark));}
+        assert_eq!(point_kind(1),Some(PointKind::Grace));assert_eq!(point_kind(83),None);
+        assert_eq!(point_kind(501),Some(PointKind::Boss));assert_eq!(point_kind(1000),Some(PointKind::Item));
+    }
+
+    #[test]
     fn base_and_dlc_worlds_use_separate_maps_at_every_grid_level() {
         let world=[46.*256.+61.56,40.*256.+34.086];
         for (area,map) in [(60,MapId::Overworld),(61,MapId::ShadowRealm)] {
@@ -188,7 +225,7 @@ mod map_location_tests {
     fn dlc_legacy_conversion_keeps_the_shadow_realm_atlas() {
         // WorldMapLegacyConvParam row 1100: Belurat's local origin -> m61_44_43.
         let mut conversion=Conversion {src:(20,0,0),src_pos:[0.,0.],dst_area:61,
-            offset:[44.*256.+108.45,43.*256.-90.97]};
+            offset:[44.*256.+108.45,43.*256.-90.97],height_offset:0.};
         let (position,space,map)=locate_legacy(20,[0.,0.],&conversion);
         assert_eq!(position,conversion.offset);assert_eq!(space,61);assert_eq!(map,Some(MapId::ShadowRealm));
         conversion.dst_area=60;
@@ -204,6 +241,7 @@ struct Conversion {
     dst_area: u8,
     /// Added to a dungeon position to get the overworld-aligned position.
     offset: [f32; 2],
+    height_offset:f32,
 }
 
 static CONVERSIONS: OnceLock<Vec<Conversion>> = OnceLock::new();
@@ -239,6 +277,7 @@ fn conversions() -> Option<&'static [Conversion]> {
                 src_pos,
                 dst_area: row.dst_area_no(),
                 offset: [dst[0] - src_pos[0], dst[1] - src_pos[1]],
+                height_offset:row.dst_pos_y()-row.src_pos_y(),
             }
         })
         .collect();
@@ -258,23 +297,23 @@ const GRACE_RANGE: f32 = 400.0;
 
 struct Grace {
     event_flag: u32,
-    position: [f32; 2],
+    location: MapLocation,
     space: i32,
 }
 
 static GRACES: OnceLock<Vec<Grace>> = OnceLock::new();
 
-fn discovered_graces(position: [f32; 2], space: i32) -> Vec<[f32; 2]> {
+fn discovered_graces(position: [f32; 2], space: i32) -> Vec<MapLocation> {
     let (Some(graces), Ok(flags)) = (graces(), unsafe { CSEventFlagMan::instance() }) else {
         return Vec::new();
     };
     graces
         .iter()
         .filter(|g| {
-            g.space == space && distance_squared(g.position, position) < GRACE_RANGE * GRACE_RANGE
+            g.space == space && distance_squared(g.location.position, position) < GRACE_RANGE * GRACE_RANGE
         })
         .filter(|g| flags.virtual_memory_flag.get_flag(g.event_flag))
-        .map(|g| g.position)
+        .map(|g| g.location)
         .collect()
 }
 
@@ -293,7 +332,7 @@ fn graces() -> Option<&'static [Grace]> {
             let (position, space, _) = locate(block, [row.pos_x(), row.pos_z()]);
             Grace {
                 event_flag: row.eventflag_id(),
-                position,
+                location:marker_location(block,[row.pos_x(),row.pos_y(),row.pos_z()],position),
                 space,
             }
         })
@@ -375,7 +414,7 @@ const POINT_RANGE: f32 = 300.0;
 
 /// One WorldMapPointParam row, reduced to what deciding its visibility needs.
 struct PointRow {
-    position: [f32; 2],
+    location: MapLocation,
     space: i32,
     on_overworld: bool,
     on_underground: bool,
@@ -415,7 +454,7 @@ fn visible_points(map: MapId, position: [f32; 2], space: i32) -> Vec<MapPoint> {
         })
         .filter(|row| {
             row.space == space
-                && distance_squared(row.position, position) < POINT_RANGE * POINT_RANGE
+                && distance_squared(row.location.position, position) < POINT_RANGE * POINT_RANGE
         })
         .filter(|row| row.open_flag == 0 || on(row.open_flag))
         .filter_map(|row| {
@@ -435,7 +474,8 @@ fn visible_points(map: MapId, position: [f32; 2], space: i32) -> Vec<MapPoint> {
             };
             Some(MapPoint {
                 kind: point_kind(icon)?,
-                position: row.position,
+                location: row.location,
+                icon,
                 cleared: row.cleared_flag != u32::MAX && on(row.cleared_flag),
             })
         })
@@ -443,7 +483,7 @@ fn visible_points(map: MapId, position: [f32; 2], space: i32) -> Vec<MapPoint> {
 }
 
 /// Groups the game's map icon ids (names from Smithbox's WORLD_MAP_ICON_ID enum).
-fn point_kind(icon: u16) -> Option<PointKind> {
+pub(crate) fn point_kind(icon: u16) -> Option<PointKind> {
     match icon {
         0 => None,
         1 | 2 => Some(PointKind::Grace),
@@ -451,7 +491,10 @@ fn point_kind(icon: u16) -> Option<PointKind> {
         83..=85 => None,
         80 | 86 => Some(PointKind::Npc),
         87 | 88 => Some(PointKind::Invasion),
+        4 | 13 | 14 | 16 | 89 | 90 => Some(PointKind::DungeonEntrance),
+        230..=232 | 234 => Some(PointKind::DungeonEntrance),
         3..=99 => Some(PointKind::Landmark),
+        200..=299 => Some(PointKind::Landmark),
         499..=502 => Some(PointKind::Boss),
         _ => Some(PointKind::Item),
     }
@@ -546,7 +589,7 @@ fn points() -> Option<&'static [PointRow]> {
                 kind,
             });
             PointRow {
-                position,
+                location:marker_location(block,[row.pos_x(),row.pos_y(),row.pos_z()],position),
                 space,
                 on_overworld: row.disp_mask00(),
                 on_underground: row.disp_mask01(),

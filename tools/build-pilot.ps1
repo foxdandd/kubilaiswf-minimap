@@ -51,6 +51,7 @@ $env:TOMBSWARD_NAV_TEST_FILE = Join-Path $OutputRoot 'tombsward.nav'
 if ($SmallDungeons) { $env:DUNGEON_NAV_TEST_DIR=Join-Path $OutputRoot 'dungeons' }
 else { Remove-Item Env:DUNGEON_NAV_TEST_DIR -ErrorAction SilentlyContinue }
 $testOptions=@('--include-ignored')
+if (-not $env:MINIMAP_MARKER_TEST_CSV -or -not $OutdoorNavigationRoots.Count) { $testOptions+=@('--skip','real_map_points_and_graces_align_with_local_layouts') }
 if (-not $OutdoorNavigationRoots.Count) { $testOptions+=@('--skip','real_outdoor_tiles_decode_and_reveal_overlapping_walkable_levels','--skip','real_outdoor_lower_and_upper_layers_render_separately','--skip','real_outdoor_loader_keeps_worlds_and_event_variants_separate','--skip','real_lower_terrain_walks_keep_the_region_and_mode_stable') }
 if ($WorldMapGameRoot) { $env:MINIMAP_WORLD_TEST_ROOT=[IO.Path]::GetFullPath($WorldMapGameRoot) }
 else { $testOptions+=@('--skip','real_dlc_atlas_selects_and_decodes_game_tiles') }

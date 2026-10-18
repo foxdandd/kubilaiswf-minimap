@@ -61,13 +61,13 @@ def render(scene, atlas):
     return result.resize((448,448),Image.Resampling.LANCZOS)
 
 
-def main(root, output, dungeons=False, outdoor=False, painted=False):
+def main(root, output, dungeons=False, outdoor=False, painted=False, features=False):
     info=json.loads((root/'atlas.json').read_text())
     atlas=np.frombuffer((root/'atlas.rgba').read_bytes(),dtype=np.uint8).reshape(info['height'],info['width'],4).astype(float)
-    canvas=Image.new('RGB',(1456,1160 if dungeons or outdoor or painted else 636),(13,18,23)); draw=ImageDraw.Draw(canvas)
+    canvas=Image.new('RGB',(1456,1160 if dungeons or outdoor or painted or features else 636),(13,18,23)); draw=ImageDraw.Draw(canvas)
     font_path='C:/Windows/Fonts/segoeui.ttf'
     title=ImageFont.truetype(font_path,29); label=ImageFont.truetype(font_path,22); small=ImageFont.truetype(font_path,17)
-    draw.text((28,18),'Pilot 6  |  Parchment, ink and height contours' if painted else 'Below-surface outdoor paths' if outdoor else 'Dungeon map blocks' if dungeons else 'Clean floors and height context',fill='white',font=title)
+    draw.text((28,18),'Pilot 8  |  Ink shadows, entrances and landmarks' if features else 'Parchment, ink and height contours' if painted else 'Below-surface outdoor paths' if outdoor else 'Dungeon map blocks' if dungeons else 'Clean floors and height context',fill='white',font=title)
     panels=[('m30_01_00_00',"Impaler's Catacombs"),('m31_03_00_00','Groveside Cave'),
             ('m32_01_00_00','Limgrave Tunnels'),('m40_00_00_00','Fog Rift Catacombs'),
             ('m41_00_00_00','Belurat Gaol'),('m43_01_00_00',"Dragon's Pit")] if dungeons else [
@@ -80,16 +80,20 @@ def main(root, output, dungeons=False, outdoor=False, painted=False):
         panels=[('Entrance-Layered','Tombsward Catacombs'),('m31_03_00_00','Groveside Cave'),
                 ('m43_01_00_00',"Dragon's Pit"),('Village-Lower','Albinauric village area - lower'),
                 ('Ellac-Lower','Ellac River area - lower'),('Rauh-Lower','Rauh Base area - lower')]
+    if features:
+        panels=[('Entrance-Layered','Height layers in warm ink'),('Symbols-Entrances','Entrance symbol families'),
+                ('Symbols-Landmarks','Landmark symbol families'),('Village-Markers','Albinauric Village markers'),
+                ('DLC-Entrance','DLC dungeon entrance'),('Dungeon-Grace','Dungeon graces and map points')]
     for i,(name,caption) in enumerate(panels):
         x=24+(i%3)*480; y=(i//3)*524
         draw.text((x+12,72+y),caption,fill=(222,207,172),font=label)
         scene=json.loads((root/f'{name}.json').read_text())
         canvas.paste(render(scene,atlas),(x,110+y))
-    legend_y=1092 if dungeons or outdoor or painted else 568
-    for x,text,color in [(280,'UPPER',(108,156,173)),(650,'CURRENT',(233,209,158)),(1035,'LOWER',(131,108,76))]:
+    legend_y=1092 if dungeons or outdoor or painted or features else 568
+    for x,text,color in [(280,'UPPER',(199,176,131)),(650,'CURRENT',(233,209,158)),(1035,'LOWER',(125,103,71))]:
         draw.rectangle((x,legend_y,x+12,legend_y+12),fill=color)
         draw.text((x+22,legend_y-8),text,fill=color,font=label)
-    note='Offline preview of actual draw data. Original-style material; paths follow extracted navigation. Gameplay check pending.' if painted else 'Actual draw data: same X/Z at two heights in each column. Navigation surfaces; live alignment still needs testing.' if outdoor else 'Offline previews from actual ImGui draw data at sampled positions. New dungeon alignment needs an in-game check.' if dungeons else 'Offline preview from actual ImGui draw data. Gameplay check pending.'
+    note='Offline draw data. Marker placement samples use local game params; actual visibility follows game flags in play.' if features else 'Offline preview of actual draw data. Original-style material; paths follow extracted navigation. Gameplay check pending.' if painted else 'Actual draw data: same X/Z at two heights in each column. Navigation surfaces; live alignment still needs testing.' if outdoor else 'Offline previews from actual ImGui draw data at sampled positions. New dungeon alignment needs an in-game check.' if dungeons else 'Offline preview from actual ImGui draw data. Gameplay check pending.'
     draw.text((28,legend_y+40),note,fill=(154,166,174),font=small)
     output.parent.mkdir(parents=True,exist_ok=True);canvas.save(output)
     print(output)
@@ -101,4 +105,5 @@ if __name__=='__main__':
     parser.add_argument('--dungeons',action='store_true',help='Show six sample dungeons from the 60-map render test')
     parser.add_argument('--outdoor',action='store_true',help='Compare real lower and upper outdoor layers')
     parser.add_argument('--painted',action='store_true',help='Show three dungeons and three below-surface outdoor layouts')
-    args=parser.parse_args();main(args.root,args.output,args.dungeons,args.outdoor,args.painted)
+    parser.add_argument('--features',action='store_true',help='Show warm height shadows and local marker samples')
+    args=parser.parse_args();main(args.root,args.output,args.dungeons,args.outdoor,args.painted,args.features)
