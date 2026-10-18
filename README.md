@@ -4,17 +4,25 @@ An enhanced fork of [kubilaiswf's Minimap](https://github.com/kubilaiswf/kubilai
 
 ## Available on GitHub
 
-The public source on `main` includes layouts for **60 small-dungeon map areas** (48 base-game and 12 DLC areas), floor-height colours and slope hints, and the DLC outdoor world map with graces, map points and numbered beacons. The original project's releases do not include these additions.
+The `main` branch contains the **experimental pilot 10 source**, based on upstream
+0.5.0, with support for 60 small-dungeon map areas, the Shadow of the Erdtree
+outdoor map, below-surface terrain, local landmarks and cached outdoor drawing.
+The original project's releases do not include these fork additions.
 
-Dungeon layouts load in the background. They come from AI navigation surfaces: they describe walkable geometry, not verified room boundaries or physical walls. The count is 60 map areas, not 60 confirmed distinct dungeons. One unnamed forge is identified by its map ID.
+**No pilot 10 binary release has been published.** Older release downloads do not
+contain all of the current source features. Game-derived map data and test saves
+are not included in the repository.
 
-## Latest local test: pilot 10, based on upstream 0.5.0
+Dungeon layouts load in the background. The local test used 48 base-game and
+12 DLC map areas. These follow AI navigation surfaces, not verified room walls;
+60 map areas does not mean 60 confirmed distinct dungeons. One unnamed forge is
+identified by its map ID. Physical terrain/scenery are optional local sidecars.
 
-**Pilot 10 is a local test build. Its latest source and game-derived data have not been published to GitHub.** The public development branch also predates it. Cloning this repository currently gives the public baseline described above.
+## Experimental pilot 10 / upstream 0.5.0
 
-The local source now carries the runtime changes from [upstream v0.5.0](https://github.com/kubilaiswf/kubilaiswf-minimap/releases/tag/v0.5.0), commit `5ae48a5`: co-op partner arrows, Map for Goblins DLL icons, the Stormveil/world-reference conversion fix and the new F7/F8 defaults. The fork retains DLC coordinate support and accumulates height through chained dungeon conversions. Its installed test profile keeps F6/F7/F8. Local partner arrows use the dungeon scale and suppress distant floors.
+The source carries the runtime changes from [upstream v0.5.0](https://github.com/kubilaiswf/kubilaiswf-minimap/releases/tag/v0.5.0), commit `5ae48a5`: co-op partner arrows, Map for Goblins DLL icons, the Stormveil/world-reference conversion fix and the new F7/F8 defaults. The fork retains DLC coordinate support and accumulates height through chained dungeon conversions. Its installed test profile keeps F6/F7/F8. Local partner arrows use the dungeon scale and suppress distant floors.
 
-The local test also adds:
+Pilot 10 adds:
 
 - Below-surface layouts from 719 base-game/DLC navigation tile variants. Auto requires broad overhead coverage and keeps nearby gaps stable. Retention on connected open ground is limited to 64 m from confirmed cover; after leaving that margin, 2 seconds of supported open ground restores Surface. This fixes the reproduced Scenic Isle lake case. F8 Local and Surface remain available for areas where the heuristic needs manual selection.
 - Outdoor terrain is prepared as a cached image on a background worker. Walking and camera turns reuse it; the game draws a small texture disc instead of rebuilding the physical mesh every frame. Stale areas are rejected, zoom replaces one texture, and loading screens do not upload images. A short “Preparing local terrain” message can appear during a new patch.
@@ -59,7 +67,7 @@ pwsh -NoProfile -File .\tools\build-pilot.ps1 `
 
 The package contains `tombsward-minimap-test.dll`, `minimap.ini`, dungeon data and a separate `dungeon-test.me3` profile. The DLL retains its early test filename. `-WorldMapGameRoot` enables real-game DLC tile tests and is optional. GNU Windows builds need an ASCII toolchain/build path; the script accepts `-CargoHome`, `-RustupHome`, `-GccBin` and `-BuildRoot`.
 
-See [TESTING.md](TESTING.md) for the checks and preparation supported by the public source. Pilot 10's outdoor/cartography tools and new rendering are pending source publication.
+See [TESTING.md](TESTING.md) for checks and data preparation. The outdoor/cartography tools are included in this source update; the first navigation/MSB export step still needs external developer tools.
 
 ## Use with an existing ME3 profile
 
@@ -78,13 +86,13 @@ For a plain Cargo build, use `kubilaiswf_minimap.dll`. Load one minimap DLL per 
 
 ## Controls and settings
 
-The defaults below apply to the local 0.5.0 pilot. The current public baseline uses F9/F10/F11.
+These are the current source defaults. Existing `minimap.ini` files keep their own key choices.
 
 | Action | Default key |
 | --- | --- |
 | Show or hide the minimap | F7 |
 | Change zoom | F8 |
-| Cycle layered / current / all floors | F11 |
+| Change floor / outdoor view | F11 |
 
 The existing local test installation uses **F6 / F7 / F8** instead. In pilot 10, outdoors F8 cycles **Auto / Local / Surface**. Inside supported dungeons it cycles the floor views. Updating that installation preserves its INI and navigation data.
 
@@ -106,7 +114,7 @@ dungeon_height_band = 2.0
 dungeon_floor_key = F11
 ```
 
-`rotate = false` keeps north up. `size` accepts 0.5–2.5; `margin` is in pixels at 1080p. The dungeon height band accepts 0.5–5.0 metres. Outdoor zoom radii are 40 / 80 / 160 m; dungeon radii are 15 / 30 / 60 m. The local pilot also supports `parchment_maps` and `outdoor_layers`, both enabled by default when absent from an older INI.
+`rotate = false` keeps north up. `size` accepts 0.5–2.5; `margin` is in pixels at 1080p. The dungeon height band accepts 0.5–5.0 metres. Outdoor zoom radii are 40 / 80 / 160 m; dungeon radii are 15 / 30 / 60 m. The source also supports `parchment_maps` and `outdoor_layers`, both enabled by default when absent from an older INI.
 
 ## Known limits and startup compatibility
 
@@ -114,12 +122,42 @@ Navigation data follows vanilla layouts; overhaul mods may change them. AI walka
 
 If startup closes or freezes with QuestPath enabled, set `renderer = window` under `[overlay_render]` in its INI and restart. This supported separate-window renderer passed a previous 60-second combined-profile game-window check. It is a local compatibility workaround; character loading and overlay appearance still require gameplay testing.
 
+## Preparing a public mod download
+
+Start with an experimental pre-release after character-loaded checks at Albinauric
+Village, the Scenic Isle lake and representative DLC lower areas. Test switching,
+warps, zoom, installation and frame pacing on a clean profile. CPU drawing
+benchmarks above do not establish gameplay FPS.
+
+The private five-file pilot 10 update is an upgrade for an existing installation;
+it does not include the navigation data needed by a first-time user. Before a
+full dungeon/terrain release, provide a usable local data-generation workflow or
+confirm redistribution permissions for the extracted data. The current tools
+still require external navigation/MSB exports. Keep game-derived files private
+while those permissions are unresolved.
+
+A public package should include the DLL, a generic INI/profile, installation and
+uninstall instructions, supported game version, known issues, LICENSE,
+THIRD-PARTY-NOTICES.txt and checksums. Exclude saves, account information, logs,
+local configuration and original game archives. Include the source link and credit
+kubilaiswf and the icon authors. The parchment material was AI-generated; code was
+developed with AI assistance. Apply the required Nexus AI/content tags according
+to its current [file submission guidelines](https://help.nexusmods.com/article/28-file-submission-guidelines).
+
+The configured GitHub build ZIP contains the DLL and generic configuration, without generated
+map sidecars. It supports the original surface-map functionality; custom local
+layouts need the separately generated data. With GitHub Actions enabled, pushes to `main` build this artifact;
+a `v*` tag also triggers the existing public release workflow. Create a release
+tag only when its contents and description are ready for public download.
+
 ## Credits and license
 
 - [kubilaiswf](https://github.com/kubilaiswf/kubilaiswf-minimap) — original minimap, artwork and implementation.
 - [fromsoftware-rs](https://github.com/vswarte/fromsoftware-rs) — game structures.
 - [hudhook](https://github.com/veeenu/hudhook) — overlay rendering.
+- [Map for Goblins DLL](https://github.com/VirusAlex/ERR-MapForGoblins-DLL) — imported icon atlas; see its retained notices.
 - [soarqin/EROverlay](https://github.com/soarqin/EROverlay) — beacon and map-point research.
 - [SoulsFormats](https://github.com/soulsmods/SoulsFormatsNEXT), [UXM](https://github.com/Nordgaren/UXM-Selective-Unpack) and [Smithbox](https://github.com/vawser/Smithbox) — file formats and map research.
 
-MIT, inherited from the original project. Keep the copyright notice and [LICENSE](LICENSE).
+MIT, inherited from the original project. Keep the copyright notice, [LICENSE](LICENSE)
+and all [third-party notices](package/THIRD-PARTY-NOTICES.txt).
