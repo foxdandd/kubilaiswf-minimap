@@ -20,6 +20,9 @@ identified by its map ID. Physical terrain/scenery are optional local sidecars.
 
 ## Experimental pilot 10 / upstream 0.5.0
 
+Upstream history is merged through `5ae48a5` (v0.5.0). The fork retains its DLC,
+local-map and cached-terrain extensions alongside the original runtime changes.
+
 The source carries the runtime changes from [upstream v0.5.0](https://github.com/kubilaiswf/kubilaiswf-minimap/releases/tag/v0.5.0), commit `5ae48a5`: co-op partner arrows, Map for Goblins DLL icons, the Stormveil/world-reference conversion fix and the new F7/F8 defaults. The fork retains DLC coordinate support and accumulates height through chained dungeon conversions. Its installed test profile keeps F6/F7/F8. Local partner arrows use the dungeon scale and suppress distant floors.
 
 Pilot 10 adds:
@@ -81,6 +84,10 @@ For a test package copied to `natives/DungeonMinimap`:
 [[natives]]
 path = 'natives/DungeonMinimap/tombsward-minimap-test.dll'
 ```
+
+Use one `natives` format in a profile: remove an empty `natives = []` before
+adding `[[natives]]`, or add the DLL inside an existing nonempty inline list.
+ME3 cannot read both formats together.
 
 For a plain Cargo build, use `kubilaiswf_minimap.dll`. Load one minimap DLL per profile and keep `start_online = false`. The separate test profile is an alternative for isolated testing; ME3 may copy the normal save on first use, so this does not automatically create a fresh character.
 

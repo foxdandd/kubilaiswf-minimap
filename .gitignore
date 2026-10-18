@@ -5,3 +5,4 @@
 *.land
 *.log
 __pycache__/
+/screenshots
