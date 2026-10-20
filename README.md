@@ -138,7 +138,7 @@ Releases are built by GitHub Actions: pushing a `v*` tag builds the zip and publ
 - [fromsoftware-rs](https://github.com/vswarte/fromsoftware-rs) for the game structures (MIT / Apache 2.0, NON-AI variants)
 - [hudhook](https://github.com/veeenu/hudhook) for the overlay
 - [soarqin/EROverlay](https://github.com/soarqin/EROverlay) for documenting the beacon and map point logic
-- [Map For Goblins - DLL](https://github.com/VirusAlex/ERR-MapForGoblins-DLL) by VirusAlex for its map API and marker icons (MIT, see `package/THIRD-PARTY-NOTICES.txt`)
+- [Map For Goblins - DLL](https://github.com/VirusAlex/ERR-MapForGoblins-DLL) by VirusAlex for its marker icons (MIT, see `package/THIRD-PARTY-NOTICES.txt`), and special thanks for adding a map API so other mods can show its markers
 - [SoulsFormats](https://github.com/soulsmods/SoulsFormatsNEXT), [UXM](https://github.com/Nordgaren/UXM-Selective-Unpack) and [Smithbox](https://github.com/vawser/Smithbox) for file format and map research
 
 ## License
