@@ -3,6 +3,7 @@ mod config;
 mod formats;
 mod game;
 mod maptiles;
+mod mfg;
 mod minimap;
 mod reader;
 
@@ -22,9 +23,9 @@ use hudhook::windows::core::PCWSTR;
 use pelite::pe64::{Pe, PeView};
 
 /// The game version the struct layouts and beacon offsets were made for. fromsoftware-rs panics
-/// on versions it doesn't know, which with `panic = "abort"` would crash the game, so any other
-/// version leaves the mod switched off.
-const SUPPORTED_VERSION: [u16; 4] = [2, 7, 1, 0];
+/// on versions it doesn't know, which with `panic = "abort"` would crash the game, so on any other
+/// version the game is left alone.
+const SUPPORTED_VERSION: [u16; 4] = [2, 7, 2, 0];
 
 /// # Safety
 /// Called by the Windows loader when me3 loads this DLL. Do not call it yourself.
@@ -38,19 +39,20 @@ pub unsafe extern "system" fn DllMain(module: usize, reason: u32, _reserved: usi
 }
 
 fn init(module: usize) {
-    if !supported_game() {
-        return;
+    // On other versions the game is never read, and the overlay only says an update is needed.
+    let supported = supported_game();
+    if supported {
+        let Ok(task) = CSTaskImp::wait_for_instance(Duration::MAX) else {
+            return;
+        };
+        let handle = task.run_recurring(
+            |_: &FD4TaskData| game::update(),
+            // At the start of the frame, outside the game's physics and character update steps.
+            CSTaskGroupIndex::FrameBegin,
+        );
+        // Dropping the handle unregisters the task, and it should run for the rest of the session.
+        std::mem::forget(handle);
     }
-    let Ok(task) = CSTaskImp::wait_for_instance(Duration::MAX) else {
-        return;
-    };
-    let handle = task.run_recurring(
-        |_: &FD4TaskData| game::update(),
-        // At the start of the frame, outside the game's physics and character update steps.
-        CSTaskGroupIndex::FrameBegin,
-    );
-    // Dropping the handle unregisters the task, and it should run for the rest of the session.
-    std::mem::forget(handle);
 
     let Some(game_dir) = std::env::current_exe()
         .ok()
@@ -61,7 +63,7 @@ fn init(module: usize) {
     let dll = dll_path(module);
     let config = config::Config::load(&dll.with_file_name("minimap.ini"));
     let _ = Hudhook::builder()
-        .with::<ImguiDx12Hooks>(minimap::Minimap::new(&game_dir, config))
+        .with::<ImguiDx12Hooks>(minimap::Minimap::new(&game_dir, config, supported))
         .build()
         .apply();
 }

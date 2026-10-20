@@ -10,14 +10,15 @@ crate-type = ["cdylib"]
 
 # The crates.io release of `eldenring` only knows game version 2.6.2; this revision supports 2.7.1.
 [dependencies]
-eldenring = { git = "https://github.com/vswarte/fromsoftware-rs", rev = "59fbd3b3b7daaf14aca47c9f73530493dba6bc79" }
-fromsoftware-shared = { git = "https://github.com/vswarte/fromsoftware-rs", rev = "59fbd3b3b7daaf14aca47c9f73530493dba6bc79" }
+eldenring = { git = "https://github.com/vswarte/fromsoftware-rs", rev = "09a4208ac26af4ae07b08c5273ee0e89faf97cb8" }
+fromsoftware-shared = { git = "https://github.com/vswarte/fromsoftware-rs", rev = "09a4208ac26af4ae07b08c5273ee0e89faf97cb8" }
 hudhook = { version = "0.9.3", default-features = false, features = ["dx12"] }
 aes = "0.8"
 rsa = { version = "0.9", features = ["pem"] }
 libloading = "0.8"
 texture2ddecoder = "0.1"
 png = "0.17"
+flate2 = "1"
 pelite = "0.10"
 
 [profile.release]

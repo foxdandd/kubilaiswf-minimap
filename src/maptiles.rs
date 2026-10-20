@@ -3,7 +3,7 @@
 //! The menu map is a 41x41 grid of 256px tiles (`MENU_MapTile_Mxx_L0_XX_YY_flags`) at one pixel
 //! per meter, with Y growing northwards. Every grid cell has a variant per combination of map
 //! fragments; the game's `.mtmsk` lists which fragments touch each cell, and the variant named
-//! after that full mask is the cell as it looks with every fragment collected.
+//! after the fragments the player has, within that mask, is the cell as the world map shows it.
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -64,8 +64,12 @@ pub struct Window {
     pub rgba: Vec<u8>,
 }
 
+/// A window to load: the map, its south-west cell and the map fragments to show, one bit per
+/// fragment as in the `.mtmsk` masks.
+pub type Request = (MapId, [i32; 2], u32);
+
 pub struct Loader {
-    requests: Sender<(MapId, [i32; 2])>,
+    requests: Sender<Request>,
     // The render loop has to be Sync, which a bare Receiver isn't.
     windows: Mutex<Receiver<Window>>,
 }
@@ -86,8 +90,8 @@ impl Loader {
         }
     }
 
-    pub fn request(&self, map: MapId, origin: [i32; 2]) {
-        let _ = self.requests.send((map, origin));
+    pub fn request(&self, request: Request) {
+        let _ = self.requests.send(request);
     }
 
     pub fn poll(&self) -> Option<Window> {
@@ -97,7 +101,7 @@ impl Loader {
 
 fn serve(
     game_dir: &Path,
-    requests: &Receiver<(MapId, [i32; 2])>,
+    requests: &Receiver<Request>,
     windows: &Sender<Window>,
 ) -> io::Result<()> {
     let oodle = Oodle::load(&game_dir.join("oo2core_6_win64.dll"))?;
@@ -105,21 +109,20 @@ fn serve(
         read_masks(&oodle.decompress_dcx(
             &archive::open(game_dir, "/menu/71_maptile.mtmskbnd.dcx")?.read_all()?,
         )?)?;
-    let tiles = select_tiles(
-        read_binder(&archive::open(game_dir, "/menu/71_maptile.tpfbhd")?.read_all()?)?,
-        &masks,
-    );
+    let tiles = index_tiles(read_binder(
+        &archive::open(game_dir, "/menu/71_maptile.tpfbhd")?.read_all()?,
+    )?);
     let mut bdt = archive::open(game_dir, "/menu/71_maptile.tpfbdt")?;
-    let mut decoded: HashMap<(MapId, [i32; 2]), Vec<u8>> = HashMap::new();
+    let mut decoded: HashMap<(MapId, [i32; 2], u32), Vec<u8>> = HashMap::new();
 
     while let Ok(mut request) = requests.recv() {
         // Only the newest request matters once the player has moved on.
         while let Ok(newer) = requests.try_recv() {
             request = newer;
         }
-        let (map, origin) = request;
+        let (map, origin, fragments) = request;
         // Nine cells are needed at a time; dropping the rest bounds memory to a few MB.
-        decoded.retain(|&(m, [x, y]), _| {
+        decoded.retain(|&(m, [x, y], _), _| {
             m == map
                 && (origin[0] - 1..=origin[0] + 3).contains(&x)
                 && (origin[1] - 1..=origin[1] + 3).contains(&y)
@@ -129,9 +132,11 @@ fn serve(
         for dy in 0..WINDOW_TILES {
             for dx in 0..WINDOW_TILES {
                 let cell = [origin[0] + dx as i32, origin[1] + dy as i32];
-                let tile = match decoded.entry((map, cell)) {
+                let variant = masks.get(&(map, cell)).copied().unwrap_or(0) & fragments;
+                let key = (map, cell, variant);
+                let tile = match decoded.entry(key) {
                     Entry::Occupied(tile) => tile.into_mut(),
-                    Entry::Vacant(slot) => slot.insert(match tiles.get(&(map, cell)) {
+                    Entry::Vacant(slot) => slot.insert(match tiles.get(&key) {
                         // One unreadable tile must not stop the map for the rest of the session.
                         Some(entry) => bdt
                             .read_at(entry.offset, entry.size)
@@ -188,11 +193,8 @@ fn attribute(line: &str, name: &str) -> Option<u32> {
     line[start..].split('"').next()?.parse().ok()
 }
 
-/// Keeps, for every L0 cell, the variant whose flags equal the cell's full fragment mask.
-fn select_tiles(
-    entries: Vec<BinderEntry>,
-    masks: &HashMap<(MapId, [i32; 2]), u32>,
-) -> HashMap<(MapId, [i32; 2]), BinderEntry> {
+/// Every L0 cell variant, by map, cell and the fragments it shows.
+fn index_tiles(entries: Vec<BinderEntry>) -> HashMap<(MapId, [i32; 2], u32), BinderEntry> {
     let mut tiles = HashMap::new();
     for entry in entries {
         // e.g. 71_MapTile\MENU_MapTile_M00_L0_12_31_00000100.tpf.dcx
@@ -216,9 +218,7 @@ fn select_tiles(
         ) else {
             continue;
         };
-        if masks.get(&(map, [x, y])).copied().unwrap_or(0) == flags {
-            tiles.insert((map, [x, y]), entry);
-        }
+        tiles.insert((map, [x, y], flags), entry);
     }
     tiles
 }

@@ -25,17 +25,17 @@ It draws the game's own world map in the top right corner, turns with your camer
 ## Features
 
 - **The game's own world map**, read from your install while the game runs. Nothing from the game is shipped.
-- **Fully revealed**, in the overworld, inside legacy dungeons and in the underground.
+- **Fully revealed**, in the overworld, inside legacy dungeons and in the underground. Or, with `full_map = false`, only what your map fragments reveal, like the world map.
 - **Turns with the camera** or stays north up, with a smooth arrow and three zoom levels (40, 80, 160 m).
 - **Graces and beacons.** Numbered like in the game, beacons out of range point the way from the rim.
-- **[Map for Goblins](https://www.nexusmods.com/eldenring/mods/3091) and [Map for Goblins DLL](https://www.nexusmods.com/eldenring/mods/10062).** Their markers show up and disappear once looted. With the DLL edition you get its icons, and hiding a category in its menu hides it here too.
+- **[Map for Goblins](https://www.nexusmods.com/eldenring/mods/3091) and [Map for Goblins DLL](https://www.nexusmods.com/eldenring/mods/10062).** Their markers show up and disappear once looted. With the DLL edition you get its icons, and hiding a category in its menu hides it here too. From its version 2.1.6 the minimap reads both through its map API.
 - **Co-op partners**, Seamless Co-op included, as blue arrows. Out of range they point the way from the rim.
 - **A trail** of where you've been.
 - **Out of the way.** Hides in menus, on the world map, on loading screens, in Roundtable Hold and in caves and catacombs. Optionally during boss fights.
 
 ## Install
 
-You need [me3](https://github.com/garyttierney/me3) and Elden Ring **1.17.1**. On any other version the mod turns itself off instead of crashing the game.
+You need [me3](https://github.com/garyttierney/me3) and Elden Ring **1.17.2**. After a game update the mod can't read the game until it's updated too, so instead of risking a crash it shows an empty frame saying it needs an update for 20 seconds, then stays out of the way.
 
 1. Download the zip from [Nexus](https://www.nexusmods.com/eldenring/mods/11319) or [Releases](https://github.com/kubilaiswf/kubilaiswf-minimap/releases/latest) and extract the `kubilaiswf-minimap` folder anywhere.
 2. Double click `kubilaiswf-minimap.me3`.
@@ -82,6 +82,7 @@ Everything else is in `minimap.ini` next to the DLL, created on first launch. Re
 | `trail` | `true` | Draw the path you walked |
 | `rotate` | `true` | Turn the map with the camera. `false` keeps north up |
 | `compass` | `true` | N / E / S / W letters |
+| `full_map` | `true` | `false` shows only what your map fragments reveal |
 | `coop_players` | `true` | Show your co-op partners, Seamless Co-op included |
 | `hide_in_boss_fights` | `false` | Hide while a boss health bar is on screen |
 | `hide_in_caves` | `true` | Hide in catacombs, caves and tunnels |
@@ -95,7 +96,7 @@ Updating from before 0.4.0? The keys used to be F9 and F10, which clash with Map
 <details>
 <summary><b>Troubleshooting</b></summary>
 
-**The minimap doesn't show up.** Check that `minimap.ini` was created next to the DLL. If it wasn't, the DLL never loaded: check the path in your `.me3` profile. If it was, check the game version, the mod only runs on 1.17.1.
+**The minimap doesn't show up.** Check that `minimap.ini` was created next to the DLL. If it wasn't, the DLL never loaded: check the path in your `.me3` profile. If it was, check the game version, the mod only runs on 1.17.2.
 
 **A key does nothing, or does two things.** Another mod uses the same key. Change `toggle_key` or `zoom_key` in `minimap.ini`.
 
@@ -134,10 +135,10 @@ Releases are built by GitHub Actions: pushing a `v*` tag builds the zip and publ
 
 ## Credits
 
-- [fromsoftware-rs](https://github.com/vswarte/fromsoftware-rs) for the game structures
+- [fromsoftware-rs](https://github.com/vswarte/fromsoftware-rs) for the game structures (MIT / Apache 2.0, NON-AI variants)
 - [hudhook](https://github.com/veeenu/hudhook) for the overlay
 - [soarqin/EROverlay](https://github.com/soarqin/EROverlay) for documenting the beacon and map point logic
-- [Map For Goblins - DLL](https://github.com/VirusAlex/ERR-MapForGoblins-DLL) by VirusAlex for its marker icons (MIT, see `package/THIRD-PARTY-NOTICES.txt`)
+- [Map For Goblins - DLL](https://github.com/VirusAlex/ERR-MapForGoblins-DLL) by VirusAlex for its map API and marker icons (MIT, see `package/THIRD-PARTY-NOTICES.txt`)
 - [SoulsFormats](https://github.com/soulsmods/SoulsFormatsNEXT), [UXM](https://github.com/Nordgaren/UXM-Selective-Unpack) and [Smithbox](https://github.com/vawser/Smithbox) for file format and map research
 
 ## License

@@ -3,13 +3,14 @@ use std::sync::{Mutex, OnceLock};
 use eldenring::cs::{
     BlockId, BonfireWarpParam, CSCamera, CSEventFlagMan, CSFade, CSFeManHudState, CSFeManImp,
     CSMenuManImp, PlayerIns, SoloParamRepository, WorldChrMan, WorldMapLegacyConvParam,
-    WorldMapPointParam,
+    WorldMapPieceParam, WorldMapPointParam,
 };
 use fromsoftware_shared::FromStatic;
 use hudhook::windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use hudhook::windows::core::w;
 
 use crate::maptiles::{self, MapId};
+use crate::mfg;
 
 /// Copied out on a game task so the render thread never touches live game objects.
 #[derive(Clone)]
@@ -38,6 +39,8 @@ pub struct Snapshot {
     pub points: Vec<MapPoint>,
     /// Other players in the session, Seamless Co-op partners included, in the same space.
     pub coop: Vec<CoopPlayer>,
+    /// Map fragments the player has, see `map_fragments`.
+    pub fragments: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -64,8 +67,16 @@ pub struct MapPoint {
     pub position: [f32; 2],
     /// Defeated bosses and the like, which the game marks as done.
     pub cleared: bool,
-    /// Cell of `assets/mfg_icons.png` for markers added by Map for Goblins' DLL edition.
-    pub mfg_icon: Option<u16>,
+    pub mfg_icon: Option<MfgIcon>,
+}
+
+/// Icons of markers added by Map for Goblins' DLL edition.
+#[derive(Clone, Copy)]
+pub enum MfgIcon {
+    /// A cell of `assets/mfg_icons.png`, for versions without the map API.
+    Bundled(u16),
+    /// A source icon id from the map API, see `mfg::icons`.
+    Api(u32),
 }
 
 /// Icons in `assets/mfg_icons.png`, made from Map for Goblins DLL 2.1.5. The DLL appends them
@@ -131,9 +142,35 @@ fn read() -> Option<Snapshot> {
         beacons: map.map_or_else(Vec::new, placed_beacons),
         points: map.map_or_else(Vec::new, |map| visible_points(map, position, space)),
         coop: coop_players(world_chr_man, player, position, space),
+        fragments: map_fragments(map),
     })
 }
 
+/// The map fragments the player has, one bit per fragment of the map they're on, as the map
+/// tile masks number them: bit b is WorldMapPieceParam row `base + b`, base 0 for the
+/// overworld and 100 for the underground (checked against each row's area on the map).
+/// Everything counts as found until the params and flags are loaded.
+fn map_fragments(map: Option<MapId>) -> u32 {
+    let base = match map {
+        Some(MapId::Overworld) => 0,
+        Some(MapId::Underground) => 100,
+        None => return u32::MAX,
+    };
+    // SAFETY: game tasks run in step with the game's own updates of these singletons.
+    let (Ok(params), Ok(flags)) = (unsafe { SoloParamRepository::instance() }, unsafe {
+        CSEventFlagMan::instance()
+    }) else {
+        return u32::MAX;
+    };
+    (0..32)
+        .filter(|&bit| {
+            params
+                .get::<WorldMapPieceParam>(base + bit)
+                .map(|row| row.open_event_flag_id())
+                .is_some_and(|flag| flag != 0 && flags.virtual_memory_flag.get_flag(flag))
+        })
+        .fold(0, |bits, bit| bits | 1 << bit)
+}
 /// The game leaves other players' block positions unset, but their physics positions are live
 /// and share Havok space with ours, so they are placed by their offset from the main player.
 fn coop_players(
@@ -434,6 +471,8 @@ fn visible_points(map: MapId, position: [f32; 2], space: i32) -> Vec<MapPoint> {
                 && distance_squared(row.position, position) < POINT_RANGE * POINT_RANGE
         })
         .filter(|row| row.open_flag == 0 || on(row.open_flag))
+        // The map API reports these itself, with Map for Goblins' own visibility.
+        .filter(|row| !(row.unmasked && mfg::available()))
         .filter_map(|row| {
             let active = |text: &&PointText| {
                 text.id > 0
@@ -453,12 +492,59 @@ fn visible_points(map: MapId, position: [f32; 2], space: i32) -> Vec<MapPoint> {
                 kind: point_kind(icon)?,
                 position: row.position,
                 cleared: row.cleared_flag != u32::MAX && on(row.cleared_flag),
-                mfg_icon: row.mfg_icon,
+                mfg_icon: row.mfg_icon.map(MfgIcon::Bundled),
             })
         })
+        .chain(mfg_api_points(map, position, space))
         .collect()
 }
 
+/// Map for Goblins' markers as its map API reports them. Thousands of them go through
+/// `locate`, so the list is refreshed a few times a second rather than every frame.
+fn mfg_api_points(map: MapId, position: [f32; 2], space: i32) -> Vec<MapPoint> {
+    struct Cache {
+        calls: u32,
+        map: Option<MapId>,
+        /// Position, space and source icon id.
+        points: Vec<([f32; 2], i32, u32)>,
+    }
+    static CACHE: Mutex<Cache> = Mutex::new(Cache {
+        calls: 0,
+        map: None,
+        points: Vec::new(),
+    });
+    if !mfg::available() {
+        return Vec::new();
+    }
+    let mut cache = CACHE.lock().unwrap();
+    if cache.map != Some(map) || cache.calls.is_multiple_of(10) {
+        let layer = match map {
+            MapId::Overworld => 0,
+            MapId::Underground => 1,
+        };
+        cache.points.clear();
+        mfg::visit_points(layer, |point| {
+            let [area, x, z, _] = point.raw_map_id.to_be_bytes();
+            let (at, space, _) = locate(BlockId::from_parts(area, x, z, 0), [point.x, point.z]);
+            cache.points.push((at, space, point.icon_id));
+        });
+        cache.map = Some(map);
+    }
+    cache.calls = cache.calls.wrapping_add(1);
+    cache
+        .points
+        .iter()
+        .filter(|(at, at_space, _)| {
+            *at_space == space && distance_squared(*at, position) < POINT_RANGE * POINT_RANGE
+        })
+        .map(|&(at, _, icon)| MapPoint {
+            kind: PointKind::Item,
+            position: at,
+            cleared: false,
+            mfg_icon: Some(MfgIcon::Api(icon)),
+        })
+        .collect()
+}
 /// Groups the game's map icon ids (names from Smithbox's WORLD_MAP_ICON_ID enum).
 fn point_kind(icon: u16) -> Option<PointKind> {
     match icon {

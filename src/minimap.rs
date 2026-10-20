@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::f32::consts::{PI, TAU};
 use std::path::{Path, PathBuf};
 
@@ -6,7 +6,7 @@ use hudhook::imgui::{Context, DrawListMut, FontSource, ImColor32, TextureId, Ui}
 use hudhook::{ImguiRenderLoop, RenderContext};
 
 use crate::config::Config;
-use crate::game::{self, PointKind, Snapshot};
+use crate::game::{self, MfgIcon, PointKind, Snapshot};
 use crate::maptiles::{self, Loader, MapId, TILE, WINDOW};
 
 /// Meters from the center to the rim at each zoom level.
@@ -42,15 +42,20 @@ const BLACK: [u8; 3] = [0, 0, 0];
 
 pub struct Minimap {
     config: Config,
+    /// False on game versions the mod can't read, see `lib.rs`.
+    supported: bool,
+    /// Seconds the update notice has been on screen.
+    notice_time: f32,
     loader: Loader,
     frame: Option<TextureId>,
     arrow: Option<TextureId>,
     beacon: Option<TextureId>,
     mfg_icons: Option<TextureId>,
+    mfg_api_icons: Option<IconAtlas>,
     map_texture: Option<TextureId>,
     /// What `map_texture` currently shows.
     map_window: Option<(MapId, [i32; 2])>,
-    requested_window: Option<(MapId, [i32; 2])>,
+    requested_window: Option<maptiles::Request>,
     font_display_height: f32,
     last: Option<Snapshot>,
     camera_forward: [f32; 2],
@@ -65,14 +70,17 @@ pub struct Minimap {
 }
 
 impl Minimap {
-    pub fn new(game_dir: &Path, config: Config) -> Self {
+    pub fn new(game_dir: &Path, config: Config, supported: bool) -> Self {
         Self {
             config,
+            supported,
+            notice_time: 0.0,
             loader: Loader::spawn(game_dir),
             frame: None,
             arrow: None,
             beacon: None,
             mfg_icons: None,
+            mfg_api_icons: None,
             map_texture: None,
             map_window: None,
             requested_window: None,
@@ -108,6 +116,7 @@ impl ImguiRenderLoop for Minimap {
         self.arrow = load_png(render_context, ARROW_PNG);
         self.beacon = load_png(render_context, BEACON_PNG);
         self.mfg_icons = load_png(render_context, MFG_ICONS_PNG);
+        self.mfg_api_icons = IconAtlas::load(render_context);
     }
 
     fn before_render<'a>(
@@ -155,6 +164,16 @@ impl ImguiRenderLoop for Minimap {
         }
         if pressed(self.config.zoom_key) {
             self.zoom = (self.zoom + 1) % ZOOM_RANGES.len();
+        }
+        if !self.supported {
+            // Shown for a while after launch, then gone for good.
+            const NOTICE_SECONDS: f32 = 20.0;
+            self.notice_time += ui.io().delta_time;
+            if self.visible && self.notice_time < NOTICE_SECONDS {
+                self.alpha = (NOTICE_SECONDS - self.notice_time).min(1.0);
+                self.draw_unsupported(ui);
+            }
+            return;
         }
 
         let snapshot = game::LATEST.lock().unwrap().clone();
@@ -208,17 +227,26 @@ impl Minimap {
         // its edge instead of on every cell crossing.
         if let Some(map) = snapshot.map {
             let pixel = maptiles::map_pixel(snapshot.position);
-            let near_edge = match self.requested_window {
-                Some((requested_map, origin)) if requested_map == map => (0..2).any(|axis| {
-                    let offset = pixel[axis] - (origin[axis] * TILE as i32) as f32;
-                    !(WINDOW_MARGIN..WINDOW as f32 - WINDOW_MARGIN).contains(&offset)
-                }),
+            let fragments = if self.config.full_map {
+                u32::MAX
+            } else {
+                snapshot.fragments
+            };
+            // A newly found fragment redraws the window in place.
+            let reload = match self.requested_window {
+                Some((requested_map, origin, shown)) if requested_map == map => {
+                    shown != fragments
+                        || (0..2).any(|axis| {
+                            let offset = pixel[axis] - (origin[axis] * TILE as i32) as f32;
+                            !(WINDOW_MARGIN..WINDOW as f32 - WINDOW_MARGIN).contains(&offset)
+                        })
+                }
                 _ => true,
             };
-            if near_edge {
+            if reload {
                 let cell = pixel.map(|p| (p / TILE as f32).floor() as i32);
-                let wanted = (map, [cell[0] - 1, cell[1] - 1]);
-                self.loader.request(wanted.0, wanted.1);
+                let wanted = (map, [cell[0] - 1, cell[1] - 1], fragments);
+                self.loader.request(wanted);
                 self.requested_window = Some(wanted);
             }
         }
@@ -274,7 +302,8 @@ impl Minimap {
         )
     }
 
-    fn draw(&self, ui: &Ui, player: &Snapshot) {
+    /// Disc center, map radius, frame size and scale on the current screen.
+    fn layout(&self, ui: &Ui) -> ([f32; 2], f32, f32, f32) {
         let [width, height] = ui.io().display_size;
         let screen_scale = height / 1080.0;
         let s = screen_scale * self.config.size;
@@ -282,6 +311,42 @@ impl Minimap {
         let frame_size = radius / FRAME_HOLE;
         let margin = self.config.margin * screen_scale;
         let center = [width - margin - frame_size / 2.0, margin + frame_size / 2.0];
+        (center, radius, frame_size, s)
+    }
+
+    /// An empty frame, so players can tell the mod loaded but needs an update.
+    fn draw_unsupported(&self, ui: &Ui) {
+        let (center, radius, frame_size, s) = self.layout(ui);
+        let draw_list = ui.get_foreground_draw_list();
+        draw_list
+            .add_circle(center, radius, self.color(BACKGROUND, 0.9))
+            .filled(true)
+            .num_segments(96)
+            .build();
+        let blink = 0.55 + 0.45 * (self.notice_time * 4.0).cos();
+        for (line, dy) in [("needs an", -8.0), ("update", 8.0)] {
+            let at = [center[0], center[1] + dy * s];
+            self.draw_text_centered(ui, &draw_list, at, self.color(PALE_GOLD, blink), line);
+        }
+        self.draw_frame(&draw_list, center, frame_size);
+    }
+
+    fn draw_frame(&self, draw_list: &DrawListMut, center: [f32; 2], frame_size: f32) {
+        if let Some(frame) = self.frame {
+            let half = frame_size / 2.0;
+            draw_list
+                .add_image(
+                    frame,
+                    [center[0] - half, center[1] - half],
+                    [center[0] + half, center[1] + half],
+                )
+                .col(self.color([255, 255, 255], 1.0))
+                .build();
+        }
+    }
+
+    fn draw(&self, ui: &Ui, player: &Snapshot) {
+        let (center, radius, frame_size, s) = self.layout(ui);
         let draw_list = ui.get_foreground_draw_list();
 
         draw_list
@@ -343,18 +408,7 @@ impl Minimap {
         }
 
         self.draw_arrow(&draw_list, center, s);
-
-        if let Some(frame) = self.frame {
-            let half = frame_size / 2.0;
-            draw_list
-                .add_image(
-                    frame,
-                    [center[0] - half, center[1] - half],
-                    [center[0] + half, center[1] + half],
-                )
-                .col(self.color([255, 255, 255], 1.0))
-                .build();
-        }
+        self.draw_frame(&draw_list, center, frame_size);
     }
 
     /// A fan of wedges clips the texture to a circle and gives each rim vertex its own
@@ -471,23 +525,38 @@ impl Minimap {
                 center[1] + d[1] * pixels_per_meter,
             ];
             let opacity = if point.cleared { 0.45 } else { 1.0 };
-            if let (Some(cell), Some(texture)) = (point.mfg_icon, self.mfg_icons) {
-                let (column, row) = (cell % MFG_ICON_COLUMNS, cell / MFG_ICON_COLUMNS);
-                let uv = |column: u16, row: u16| {
-                    [
-                        f32::from(column) / f32::from(MFG_ICON_COLUMNS),
-                        f32::from(row) / f32::from(MFG_ICON_ROWS),
-                    ]
-                };
-                let half = 7.0 * s;
+            let icon = match point.mfg_icon {
+                Some(MfgIcon::Bundled(cell)) => self.mfg_icons.map(|texture| {
+                    let (column, row) = (cell % MFG_ICON_COLUMNS, cell / MFG_ICON_COLUMNS);
+                    let uv = |column: u16, row: u16| {
+                        [
+                            f32::from(column) / f32::from(MFG_ICON_COLUMNS),
+                            f32::from(row) / f32::from(MFG_ICON_ROWS),
+                        ]
+                    };
+                    (
+                        texture,
+                        uv(column, row),
+                        uv(column + 1, row + 1),
+                        [7.0, 7.0],
+                    )
+                }),
+                Some(MfgIcon::Api(id)) => self.mfg_api_icons.as_ref().and_then(|atlas| {
+                    let cell = atlas.cells.get(&id)?;
+                    Some((atlas.texture, cell.uv_min, cell.uv_max, cell.half))
+                }),
+                None => None,
+            };
+            if let Some((texture, uv_min, uv_max, half)) = icon {
+                let half = [half[0] * s, half[1] * s];
                 draw_list
                     .add_image(
                         texture,
-                        [at[0] - half, at[1] - half],
-                        [at[0] + half, at[1] + half],
+                        [at[0] - half[0], at[1] - half[1]],
+                        [at[0] + half[0], at[1] + half[1]],
                     )
-                    .uv_min(uv(column, row))
-                    .uv_max(uv(column + 1, row + 1))
+                    .uv_min(uv_min)
+                    .uv_max(uv_max)
                     .col(self.color([255, 255, 255], opacity))
                     .build();
                 continue;
@@ -739,6 +808,66 @@ impl Minimap {
 /// Normal gameplay: no menu changing the HUD and no fade covering the screen.
 fn in_control(snapshot: &Snapshot) -> bool {
     snapshot.hud_visible && snapshot.fade < 0.05
+}
+
+/// Map for Goblins' icons from its map API, packed into one texture.
+struct IconAtlas {
+    texture: TextureId,
+    cells: HashMap<u32, IconCell>,
+}
+
+struct IconCell {
+    uv_min: [f32; 2],
+    uv_max: [f32; 2],
+    /// Half the drawn size at 1080p. Icons are cropped tight, so smaller art stays smaller.
+    half: [f32; 2],
+}
+
+impl IconAtlas {
+    /// Map for Goblins draws its icons from 96px art.
+    const CELL: usize = 96;
+    const COLUMNS: usize = 16;
+
+    fn load(render_context: &mut dyn RenderContext) -> Option<Self> {
+        let icons: Vec<_> = crate::mfg::icons()
+            .into_iter()
+            .filter(|icon| icon.width <= Self::CELL && icon.height <= Self::CELL)
+            .collect();
+        if icons.is_empty() {
+            return None;
+        }
+        let width = Self::CELL * Self::COLUMNS;
+        let height = Self::CELL * icons.len().div_ceil(Self::COLUMNS);
+        let mut rgba = vec![0u8; width * height * 4];
+        let mut cells = HashMap::new();
+        for (i, icon) in icons.iter().enumerate() {
+            let (x, y) = (
+                i % Self::COLUMNS * Self::CELL,
+                i / Self::COLUMNS * Self::CELL,
+            );
+            for row in 0..icon.height {
+                let at = ((y + row) * width + x) * 4;
+                rgba[at..at + icon.width * 4]
+                    .copy_from_slice(&icon.rgba[row * icon.width * 4..(row + 1) * icon.width * 4]);
+            }
+            let uv = |px: usize, py: usize| [px as f32 / width as f32, py as f32 / height as f32];
+            cells.insert(
+                icon.source_icon_id,
+                IconCell {
+                    uv_min: uv(x, y),
+                    uv_max: uv(x + icon.width, y + icon.height),
+                    half: [
+                        8.0 * icon.width as f32 / Self::CELL as f32,
+                        8.0 * icon.height as f32 / Self::CELL as f32,
+                    ],
+                },
+            );
+        }
+        let texture = render_context
+            .load_texture(&rgba, width as u32, height as u32)
+            .ok()?;
+        Some(Self { texture, cells })
+    }
 }
 
 fn load_png(render_context: &mut dyn RenderContext, bytes: &[u8]) -> Option<TextureId> {
